@@ -43,7 +43,7 @@ explicit and acyclic.
   and worker; ESLint + Prettier clean on frontend; all three images
   (`queuelab-api`, `queuelab-autoscaler`, `queuelab-worker`) build successfully.
 
-## Epic 2 — Backend config & settings
+## Epic 2 — Backend config & settings — **COMPLETED**
 - **Intent:** Centralized env-driven settings (guardrails, TTLs, thresholds, caps,
   rate limits) that all backend services read.
 - **Scope:** `backend/app/config.py` (Pydantic Settings: caps 100/1000/10, rate
@@ -52,6 +52,28 @@ explicit and acyclic.
 - **Verification:** Pytest covers default values and env-var overrides; importing
   settings with a sample `.env` yields expected config.
 - **Depends on:** Epic 1.
+
+### Implementation notes
+- **Single `Settings` model:** one `pydantic_settings.BaseSettings` class in
+  `backend/app/config.py` holds every value, grouped by concern (datastores, caps, rate
+  limits, queue/lease, autoscaler, retention, worker image). `SettingsConfigDict` loads a
+  `.env` file with `extra="ignore"` so unknown keys don't crash.
+- **Added settings the TDD required but `.env.example` lacked:** `REDIS_JOB_TTL_SECONDS=3600`
+  (§5.7 1h hot-record TTL), `JOB_RETENTION_HOURS=24` + `SCALING_EVENT_RETENTION_HOURS=24`
+  (§5.9 Postgres prune), and `AUTOSCALER_LOOP_SECONDS=2` (§5.5 ~1–2s control loop).
+  `.env.example` was updated to stay one-to-one with the model defaults.
+- **Validation:** two integer field aliases — `PositiveInt` (`Annotated[int, Field(gt=0)]`)
+  rejects zero/negative at load, and `NonNegativeInt` (`Field(ge=0)`) allows zero for fields
+  that legitimately reach it (`min_workers`, `scale_down_threshold` — scale all the way down
+  to an empty queue). Two `model_validator(mode="after")` checks: `min_workers <= max_workers`,
+  and `scale_down_threshold <= scale_up_threshold` (so the control loop can't oscillate).
+- **Access:** `get_settings()` is `lru_cache`-wrapped for a process-wide cached instance;
+  a module-level `settings = get_settings()` gives simple `from app.config import settings`
+  imports. Tests build fresh `Settings(...)` instances to exercise overrides/validation.
+- **Verified:** Ruff lint + format clean; `pytest tests/test_config.py` green (11 tests:
+  defaults, env overrides, `.env` file load, both bounds validators, non-positive rejection,
+  zero-allowed for non-negative fields, cache identity). Local dev/test ran against the
+  existing `backend/.venv` (`uv` not on PATH on this machine; Dockerfile still uses `uv sync`).
 
 ## Epic 3 — Custom Redis queue protocol & client
 - **Intent:** The core mechanic — the custom Redis-primitive queue with real
