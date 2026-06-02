@@ -1,0 +1,79 @@
+# QueueLab local orchestration — minimal but valid service declarations.
+# Application commands/healthchecks are fleshed out in later epics.
+#
+# NOTE: Worker containers are intentionally NOT declared here. The autoscaler spawns
+# and destroys them at runtime through the mounted Docker socket (TDD §5.1), so scaling
+# and chaos are genuinely visible as containers appearing and disappearing.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-queuelab}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_DB: ${POSTGRES_DB:-queuelab}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-queuelab}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ./backend
+    # Tag the shared backend image explicitly so the autoscaler can reuse it
+    # (same Dockerfile, different command) instead of building ./backend twice.
+    image: queuelab-backend:latest
+    env_file:
+      - path: .env
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    expose:
+      - "8000"
+    # Real command (uvicorn) added when the FastAPI app exists (Epic 5).
+    command: ["python", "-c", "print('queuelab api placeholder')"]
+
+  autoscaler:
+    # Reuses the image built by the api service (same backend tree, different entrypoint).
+    image: queuelab-backend:latest
+    env_file:
+      - path: .env
+        required: false
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      # Sole holder of the Docker socket; spawns/kills sibling worker containers.
+      - /var/run/docker.sock:/var/run/docker.sock
+    # Real command (autoscaler_main) added in Epic 11.
+    command: ["python", "-c", "print('queuelab autoscaler placeholder')"]
+
+  nginx:
+    image: nginx:1.27-alpine
+    depends_on:
+      - api
+    ports:
+      - "80:80"
+      - "443:443"
+    # TLS termination, HTTP + /ws reverse proxy, and static bundle config arrive in Epic 19.
+
+volumes:
+  postgres-data:
+  redis-data:

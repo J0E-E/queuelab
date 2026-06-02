@@ -1,0 +1,19 @@
+{
+  "name": "queuelab-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "QueueLab terminal-CLI dashboard (Vite + React + TypeScript + Tailwind). Tooling skeleton; app lands in Epic 13.",
+  "scripts": {
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "eslint": "^9.17.0",
+    "globals": "^15.14.0",
+    "prettier": "^3.4.2",
+    "typescript-eslint": "^8.19.0"
+  }
+}
