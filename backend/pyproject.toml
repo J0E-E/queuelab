@@ -19,6 +19,8 @@ dependencies = [
 dev = [
     "ruff>=0.8",
     "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "testcontainers>=4.8",
 ]
 
 [tool.ruff]
@@ -31,3 +33,6 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# `async def test_*` run without a per-test marker. The queue integration suite uses
+# testcontainers to auto-spin a real Redis, so a Docker daemon must be available.
+asyncio_mode = "auto"
