@@ -47,8 +47,7 @@ explicit and acyclic.
 - **Intent:** Centralized env-driven settings (guardrails, TTLs, thresholds, caps,
   rate limits) that all backend services read.
 - **Scope:** `backend/app/config.py` (Pydantic Settings: caps 100/1000/10, rate
-  limits 1/5s & 1/10s, the time limit before a claim expires (visibility timeout), retry
-  defaults, Redis/Postgres URLs,
+  limits 1/5s & 1/10s, visibility timeout, retry defaults, Redis/Postgres URLs,
   autoscaler thresholds/idle timeout). Unit tests for defaults and env overrides.
 - **Verification:** Pytest covers default values and env-var overrides; importing
   settings with a sample `.env` yields expected config.
@@ -57,8 +56,7 @@ explicit and acyclic.
 ### Implementation notes
 - **Single `Settings` model:** one `pydantic_settings.BaseSettings` class in
   `backend/app/config.py` holds every value, grouped by concern (datastores, caps, rate
-  limits, queue/claims (leases), autoscaler, retention, worker image). `SettingsConfigDict`
-  loads a
+  limits, queue/lease, autoscaler, retention, worker image). `SettingsConfigDict` loads a
   `.env` file with `extra="ignore"` so unknown keys don't crash.
 - **Added settings the TDD required but `.env.example` lacked:** `REDIS_JOB_TTL_SECONDS=3600`
   (§5.7 1h hot-record TTL), `JOB_RETENTION_HOURS=24` + `SCALING_EVENT_RETENTION_HOURS=24`
@@ -79,40 +77,35 @@ explicit and acyclic.
 
 ## Epic 3 — Custom Redis queue protocol & client — **COMPLETED**
 - **Intent:** The core mechanic — the custom Redis-primitive queue with real
-  claiming, time-limited claims (leases), retries, and recovery, as a standalone tested
-  module.
+  claiming, leases, retries, and recovery, as a standalone tested module.
 - **Scope:** `backend/app/queue/protocol.py` (key names, payload schema, state
-  machine), `backend/app/queue/scripts/` (all-at-once or not-at-all (atomic) Lua: claim,
-  ack, nack, reap), `backend/app/queue/client.py` (enqueue/claim/ack/nack/requeue wrappers,
-  claims (leases), delayed set, counts). Integration tests against a **real Redis** covering
-  claim/ack/nack, retry/backoff, and putting a job back on the queue when its claim expired
-  (lease-expiry requeue).
+  machine), `backend/app/queue/scripts/` (atomic Lua: claim, ack, nack, reap),
+  `backend/app/queue/client.py` (enqueue/claim/ack/nack/requeue wrappers, leases,
+  delayed set, counts). Integration tests against a **real Redis** covering
+  claim/ack/nack, retry/backoff, lease-expiry requeue.
 - **Verification:** Pytest integration suite (real Redis) green: enqueue→claim→ack,
-  nack→retrying→put back on the queue (requeue), an expired claim (lease) putting a dead
-  worker's job back on the queue, counts stay consistent.
+  nack→retrying→requeue, lease expiry requeues a dead worker's job, counts stay
+  consistent.
 - **Depends on:** Epic 2.
 
 ### Implementation notes
 - **Async client.** `JobQueue` (`backend/app/queue/client.py`) is built on
-  `redis.asyncio` so the api, recovery sweep (reaper) loop, and WS layer never block the
-  event loop. It
+  `redis.asyncio` so the api, reaper loop, and WS layer never block the event loop. It
   takes an injected `Redis` (for tests) plus a `from_settings()` constructor, and reads
   every timeout/TTL/cap from the shared `app.config.settings`.
-- **Redis `TIME` is the only clock.** All deadline math (claim deadline (lease), retry
-  ready-at, delayed scores) is computed inside the Lua scripts from `redis.call('TIME')`;
-  Python passes only durations. One authoritative clock across worker containers with skewed
-  wall clocks, and the timestamp happens at the same instant as the write (atomic). Implies
-  primary-only / no Redis Cluster.
+- **Redis `TIME` is the only clock.** All deadline math (lease deadline, retry ready-at,
+  delayed scores) is computed inside the Lua scripts from `redis.call('TIME')`; Python
+  passes only durations. One authoritative clock across worker containers with skewed
+  wall clocks, and the timestamp is atomic with the write. Implies primary-only / no
+  Redis Cluster.
 - **Reap uses `worker_id` on the job hash.** `claim.lua` writes `worker_id` into
   `ql:job:{id}`; `ql:leases` stays a pure `{job_id → deadline}` sorted set. `reap.lua`
   reads `worker_id` off the hash to clean the right `ql:processing:{worker_id}` list — no
-  second claim→worker map (lease→worker). (Reap builds `ql:job:` / `ql:processing:` keys
-  inline, a documented single-node assumption.)
-- **One reap script, two passes.** `reap.lua` moves due `delayed→ready` jobs to the active
-  queue (promote) and recovers jobs whose claim expired (expired-lease) in a single
-  all-at-once or not-at-all (atomic) sweep, so a job can't be both moved to ready and
-  re-claimed (re-leased) at once. The failure branch is duplicated from `nack.lua` (Lua has
-  no imports) — both
+  second lease→worker map. (Reap builds `ql:job:` / `ql:processing:` keys inline, a
+  documented single-node assumption.)
+- **One reap script, two passes.** `reap.lua` promotes due `delayed→ready` and recovers
+  expired-lease jobs in a single atomic sweep, so a job can't be both promoted and
+  re-leased. The failure branch is duplicated from `nack.lua` (Lua has no imports) — both
   copies are marked `RETRY-DECISION (keep in sync)`. Recovery reads each job's own
   `retry_delay_ms` so jobs keep their backoff.
 - **Counts semantics.** `ql:counts` holds `queued/running/retrying` as live gauges and
@@ -125,21 +118,20 @@ explicit and acyclic.
 - **Capacity cap** (`max_total_queued`) is a soft Python-side check in `enqueue`
   (ready + delayed), raising `QueueFullError`; concurrent enqueues can slightly
   overshoot. A hard cap would need its own Lua script (noted as future tightening).
-- **Documented tradeoffs (in code comments):** at-least-once delivery, where every job runs
-  one or more times (a slow-but-alive worker's claim (lease) can expire → job runs twice; so
-  the code that runs a job must be safe to run more than once (idempotent)); orphan-in-
-  processing gap (a crash between the grab-and-move (`BLMOVE`) and `claim.lua` strands a job
-  with no claim (lease) — flagged for a future scan pass).
+- **Documented tradeoffs (in code comments):** at-least-once delivery (a slow-but-alive
+  worker's lease can expire → job runs twice; consumers must be idempotent); orphan-in-
+  processing gap (crash between `BLMOVE` and `claim.lua` strands a job with no lease —
+  flagged for a future scan pass).
 - **Tests.** `backend/tests/` gained `conftest.py` (testcontainers auto-spins
   `redis:7-alpine`, keyspace flushed per test, a `make_job` factory) and `test_queue.py`
-  (10 integration cases). Time is controlled by rewriting the claim (lease) / delayed scores
-  into the past then running the recovery sweep (reaping) — no 30s sleeps. Added dev deps `pytest-asyncio` + `testcontainers`
+  (10 integration cases). Time is controlled by rewriting lease/delayed scores into the
+  past then reaping — no 30s sleeps. Added dev deps `pytest-asyncio` + `testcontainers`
   and `asyncio_mode = "auto"`; `uv.lock` regenerated to stay frozen-installable.
 - **Verified:** Ruff lint + format clean; `pytest` green (21 tests: 11 Epic 2 config +
   10 queue) against the auto-spun real Redis; `uv lock --check` passes. Requires a Docker
   daemon for the integration suite.
 
-## Epic 4 — Postgres models & migrations
+## Epic 4 — Postgres models & migrations — **COMPLETED**
 - **Intent:** Durable, verifiable outcome record (jobs, scaling events) with bounded
   retention.
 - **Scope:** `backend/app/models/` (SQLAlchemy ORM `job`, `scaling_event` per §5.7;
@@ -149,6 +141,55 @@ explicit and acyclic.
 - **Verification:** `alembic upgrade head` creates tables; Pytest inserts/queries job
   and scaling_event rows; prune deletes only aged rows.
 - **Depends on:** Epic 2.
+
+### Implementation notes
+- **Async SQLAlchemy.** `backend/app/db/engine.py` exposes a `Database` class built on
+  `create_async_engine` over the `postgresql+psycopg` driver (psycopg3 serves async). It
+  mirrors `JobQueue`'s conventions — injectable engine, `from_settings()` constructor
+  (`pool_pre_ping=True`), an `async with db.session()` context manager, and `aclose()`.
+  The declarative `Base` lives in `db/base.py` so models and Alembic share one metadata
+  object without import cycles.
+- **`job` schema follows §5.7 plus `last_error`.** Columns match §5.7 verbatim (UUID PK,
+  `guest_handle`, broken-out `type`/`complexity`, `timestamptz` times, `duration_ms`);
+  the one addition is a nullable `last_error` (carried over from the Redis `JobRecord`) so
+  a failure reason is durably stored. `state` is plain text kept byte-for-byte aligned
+  with the Redis hash values (`app.queue.protocol.JobState`). Indexes via `index=True`:
+  `ix_job_submitted_at`, `ix_job_state`, `ix_scaling_event_at` (names matched in the
+  migration).
+- **Redis↔Postgres divergence is deliberate.** The Redis record stores `type`/`complexity`
+  inside an opaque payload and uses `enqueued_at`/`completed_at`; Postgres breaks those
+  into columns and adds `guest_handle` + `duration_ms`. The durable-writer (Epic 10) owns
+  the runtime mapping; this epic only defines the target shape.
+- **DTOs are read-side only.** `models/schemas.py` defines `JobResponse`/`ScalingEventResponse`
+  with `from_attributes=True`, so a route can build one straight from an ORM row without
+  hand-copying fields. `JobResponse` currently carries the internal `session_id`/`worker_id`;
+  whether to expose those to clients (or drop them) is flagged in the DTO for Epic 7's
+  `GET /api/jobs`.
+- **Alembic reads the URL from settings, not `alembic.ini`.** `alembic/env.py` is async:
+  it builds an async engine from `app.config.settings.database_url` and runs migrations
+  through `connection.run_sync(...)`. The first migration (`alembic/versions/0001_initial_schema.py`)
+  is hand-written (not autogenerated) so types/nullability match §5.7 exactly.
+- **Prune helper, no scheduler.** `backend/app/db/prune.py` has `prune_jobs`,
+  `prune_scaling_events`, and a combined `prune_aged_rows`; each reads its window from
+  settings, returns the deleted-row count, and a null `finished_at` (still-running job)
+  never matches the cutoff so in-flight work is safe. `prune_aged_rows` saves both deletes
+  in one transaction (atomic). The prune filters on the unindexed `finished_at` (§5.7
+  indexes only `submitted_at`/`state`) — a deliberate cheap full scan while the table
+  stays small under 24h retention; index `finished_at` only if volume ever grows. Wiring a
+  periodic caller is left to a later epic.
+- **Tests.** `conftest.py` gained a session-scoped `PostgresContainer` (`driver="psycopg"`,
+  since psycopg2 isn't installed) and a `db_session` fixture that drops+recreates the
+  schema per test. `test_models.py` (7 cases): ORM round-trips for both tables, prune
+  deletes only aged rows, and an `alembic upgrade head`/`downgrade base` smoke test that
+  asserts tables + indexes exist.
+- **Windows-dev deviation.** psycopg3 async cannot use the `ProactorEventLoop`, so
+  `conftest.py` switches to the `WindowsSelectorEventLoopPolicy` on Windows only (no-op on
+  Linux/CI, where the containers actually run). The same switch will be needed if anyone
+  runs the api under uvicorn on Windows (Epic 5 concern).
+- **Verified:** Ruff lint + format clean; `pytest` green (28 tests: 11 config + 10 queue +
+  7 Postgres) against an auto-spun real Postgres 16 + Redis 7. No new dependencies —
+  sqlalchemy/alembic/psycopg (and the test deps) were already in `pyproject.toml`, so
+  `uv.lock` is unchanged. Requires a Docker daemon for the integration suite.
 
 ## Epic 5 — FastAPI app skeleton, identity & session
 - **Intent:** A runnable FastAPI app with lifespan wiring and ephemeral guest
@@ -186,29 +227,26 @@ explicit and acyclic.
 ## Epic 8 — Worker image & simulated work
 - **Intent:** A genuine container worker that claims jobs and runs simulated work —
   the consumer side of the core flow.
-- **Scope:** `worker/worker.py` (claim loop: grab and move a job to claim it (`BLMOVE`) →
-  run → ack/nack, heartbeat, register in `ql:workers`, graceful SIGTERM puts the job back on
-  the queue (requeue) vs hard SIGKILL),
+- **Scope:** `worker/worker.py` (claim loop: BLMOVE-claim → run → ack/nack,
+  heartbeat, register in `ql:workers`, graceful SIGTERM requeue vs hard SIGKILL),
   `worker/simulate.py` (per-type duration + failure profiles), `worker/Dockerfile`
   (vendors `backend/app/queue`). Unit tests for simulate profiles; integration test:
   worker drains a submitted batch through real Redis.
 - **Verification:** Build worker image; run a container against compose Redis with a
-  seeded batch → counts move queued→running→completed/failed; SIGTERM puts the in-flight job
-  back on the queue (requeue); Pytest for simulate duration/failure math.
+  seeded batch → counts move queued→running→completed/failed; SIGTERM requeues
+  in-flight job; Pytest for simulate duration/failure math.
 - **Depends on:** Epic 7.
 
-## Epic 9 — Reaper (moving delayed jobs to ready (promotion) & claim (lease) recovery)
-- **Intent:** The chaos-recovery path — move due delayed jobs to the active queue (promote)
-  and put jobs back on the queue (requeue) whose claim (lease) lapsed (dead worker), making
-  "destroy a worker → job retried" real.
-- **Scope:** Recovery sweep (reaper) background loop in the api process: move
-  `ql:queue:delayed` → `ready` when due; scan `ql:leases` for past-deadline entries and put
-  them back on the queue (requeue) (respecting `max_retries`). Integration tests (real
-  Redis): an expired claim (lease) is put back on the queue; exhausted retries go to the
-  final `failed` state.
-- **Verification:** Pytest integration: a job whose claim deadline (lease) passes is put
-  back on the queue (requeue) as `retrying`; after `max_retries` it becomes `failed`;
-  delayed jobs move to ready (promote) on schedule.
+## Epic 9 — Reaper (delayed promotion & lease recovery)
+- **Intent:** The chaos-recovery path — promote due delayed jobs and requeue jobs
+  whose lease lapsed (dead worker), making "destroy a worker → job retried" real.
+- **Scope:** Reaper background loop in the api process: move `ql:queue:delayed` →
+  `ready` when due; scan `ql:leases` for past-deadline entries and requeue
+  (respecting `max_retries`). Integration tests (real Redis): expired lease requeues;
+  exhausted retries go terminal `failed`.
+- **Verification:** Pytest integration: a job whose lease deadline passes is requeued
+  as `retrying`; after `max_retries` it becomes `failed`; delayed jobs promote on
+  schedule.
 - **Depends on:** Epic 8.
 
 ## Epic 10 — Durable-writer & real-time broadcaster
@@ -246,10 +284,9 @@ explicit and acyclic.
   `POST /api/chaos/inject-failures` (publish on `ql:control`, rate-limited 1/10s),
   failure-bias plumbed into worker `simulate.py`, destroyed-vs-scaled-down marking on
   containers. Integration test: destroy command kills a container and the in-flight
-  job recovers via the recovery sweep (reaper).
-- **Verification:** `POST /api/chaos/destroy-worker` → container killed, claim (lease)
-  lapses, the recovery sweep (reaper) puts the job back on the queue (requeue), autoscaler
-  may replace; inject-failures biases outcomes toward
+  job recovers via the reaper.
+- **Verification:** `POST /api/chaos/destroy-worker` → container killed, lease lapses,
+  reaper requeues job, autoscaler may replace; inject-failures biases outcomes toward
   `failed`; rate limit returns 429.
 - **Depends on:** Epic 11.
 
