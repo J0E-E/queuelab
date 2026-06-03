@@ -191,7 +191,7 @@ explicit and acyclic.
   sqlalchemy/alembic/psycopg (and the test deps) were already in `pyproject.toml`, so
   `uv.lock` is unchanged. Requires a Docker daemon for the integration suite.
 
-## Epic 5 — FastAPI app skeleton, identity & session
+## Epic 5 — FastAPI app skeleton, identity & session — **COMPLETED**
 - **Intent:** A runnable FastAPI app with lifespan wiring and ephemeral guest
   identity, ready to hang routers off.
 - **Scope:** `backend/app/main.py` (app, lifespan opening Redis/Postgres, health
@@ -201,6 +201,37 @@ explicit and acyclic.
 - **Verification:** `uvicorn` boots; `GET /health` 200; `POST /api/session` returns
   `{session_id, guest_handle, color}`; Pytest for identity assignment.
 - **Depends on:** Epic 3, Epic 4.
+
+### Implementation notes
+- **Handle = color (style guide §3.4).** `services/identity.py` is a pure, no-I/O module:
+  one constant `GUEST_COLORS` maps the six fixed names → hex (`teal #2dd4bf`, `pink
+  #ff5fd2`, `lime #aaff00`, `sky #5ab0ff`, `orange #ff8c42`, `lavender #c77dff`).
+  `create_guest_identity()` picks a name at random, builds the handle as `guest-<name>`,
+  sets `color` to that name's hex, and stamps `session_id = uuid4().hex`. Returns a
+  `GuestIdentity` Pydantic model (doubles as the `POST /api/session` response shape).
+- **Random, stateless color assignment (decision).** No Redis/round-robin. With only six
+  colors two visitors can share one — acceptable, since the identity is for feed
+  attribution only, not authentication. Keeps identity trivially unit-testable.
+- **Lazy lifespan clients.** `main.py` lifespan opens `JobQueue.from_settings()` and
+  `Database.from_settings()` onto `app.state` and `aclose()`s both on shutdown. Both
+  constructors are lazy (no socket until the first command), so the app — and the boot
+  smoke test — start without live Redis/Postgres. `get_queue`/`get_database` dependency
+  providers read off `app.state` for later epics' routes.
+- **Shallow `/health` (decision).** Returns `200 {"status": "ok"}` without touching the
+  datastores, matching the epic's verification and letting the smoke test run container-
+  free. A deeper datastore ping (Redis `PING` / Postgres `SELECT 1`) is left for later.
+- **Router split.** `POST /api/session` lives in `app/routers/session.py` (an
+  `APIRouter` with `prefix="/api"`) included from `main.py`; `/health` stays in `main.py`.
+  Establishes the pattern later epics' routers follow.
+- **Tests.** `test_identity.py` (5 unit cases: handle/color rules, session-id uniqueness,
+  every color reachable) and `test_app.py` (2 smoke cases via FastAPI `TestClient`, which
+  runs lifespan: boot + `/health`, and `/api/session` shape). Neither needs containers.
+- **Dependency.** Added dev dep `httpx>=0.28` (FastAPI `TestClient` drives the app through
+  it); `uv.lock` regenerated (48 packages, `uv lock --check` clean). Starlette emits a
+  deprecation warning preferring `httpx2` — noted, not actioned.
+- **Verified:** Ruff lint + format clean; `pytest` green (35 tests: 28 prior + 7 new);
+  `uvicorn app.main:app` boots, `GET /health` → 200, `POST /api/session` →
+  `{session_id, guest_handle: "guest-pink", color: "#ff5fd2"}` (handle/color matched).
 
 ## Epic 6 — Guardrails: rate limiting & validation
 - **Intent:** Per-session token-bucket rate limiting and reusable validation/cap
