@@ -13,12 +13,17 @@ dev = [
     "pytest>=8.3",
 ]
 
-# Match the backend Ruff lint rules so both trees lint identically. (The backend's
-# `src`/pytest settings are omitted here — the worker has a flat layout and no tests yet;
-# they arrive with worker code in Epic 8.)
+# Match the backend Ruff lint rules so both trees lint identically. The worker uses a flat
+# layout (simulate.py at the package root), so `src` / pytest `pythonpath` point at "." so
+# `import simulate` resolves from worker/tests/.
 [tool.ruff]
 target-version = "py312"
 line-length = 100
+src = ["."]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

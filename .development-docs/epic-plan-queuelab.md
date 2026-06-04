@@ -403,18 +403,102 @@ explicit and acyclic.
   unknown-session + 2 session-endpoint) against an auto-spun real Redis + Postgres. No new
   dependencies. Requires a Docker daemon for the integration suite.
 
-## Epic 8 — Worker image & simulated work
-- **Intent:** A genuine container worker that claims jobs and runs simulated work —
-  the consumer side of the core flow.
-- **Scope:** `worker/worker.py` (claim loop: BLMOVE-claim → run → ack/nack,
-  heartbeat, register in `ql:workers`, graceful SIGTERM requeue vs hard SIGKILL),
-  `worker/simulate.py` (per-type duration + failure profiles), `worker/Dockerfile`
-  (vendors `backend/app/queue`). Unit tests for simulate profiles; integration test:
-  worker drains a submitted batch through real Redis.
-- **Verification:** Build worker image; run a container against compose Redis with a
-  seeded batch → counts move queued→running→completed/failed; SIGTERM requeues
-  in-flight job; Pytest for simulate duration/failure math.
+## Epic 8a — Simulated work profiles — **COMPLETED**
+- **Intent:** Per-type, complexity-scaled duration and failure profiles for simulated
+  work — a pure, tested library the worker will call. The thinnest, dependency-free
+  slice of the worker.
+- **Scope:** `worker/simulate.py` (per-`JobType` duration + failure-rate profiles keyed
+  by `type`/`complexity` 1..5; pure functions returning a duration and a pass/fail
+  outcome, with injectable randomness). `worker/pyproject.toml` gains pytest config;
+  new `worker/tests/test_simulate.py`.
+- **Verification:** Pytest covers duration scaling and failure-rate math
+  deterministically (seeded/injected randomness — no flakiness); profiles defined for
+  all four job types.
 - **Depends on:** Epic 7.
+- **Implementation notes (plan-time decisions):**
+  - **Profile feel = "Snappy"** (user-confirmed). Constants: `BASE_DURATION_MS = {email 300,
+    webhook 500, report 800, image 1000}`, `BASE_FAILURE_RATE = {email .02, webhook .03,
+    report .04, image .05}`, jitter `uniform(0.85, 1.15)`. Formulas (TDD §5.4):
+    `duration_ms = round(base * complexity * jitter)`,
+    `fail_prob = clamp(base * complexity + failure_bias, 0, 1)`, `passed = rng.random() >= fail_prob`.
+    Ranges ~0.3s–5.8s, max ~25% failure — all comfortably under the 30s lease.
+  - **`failure_bias=0.0` included now** (user-confirmed): `simulated_outcome` takes the optional
+    bias term today (zero behaviour change when unused) so Epic 12's chaos button plugs in with
+    no signature change.
+  - **Dependency-free, string-keyed.** No `app.queue` import — profiles keyed by the four literal
+    type strings; since `JobType` is a `StrEnum`, Epic 8b can pass `JobType` members straight in.
+    Return unit is **integer ms** (matches durable `job.duration_ms`); randomness is an injectable
+    keyword-only `rng: random.Random`. Unknown type → `ValueError`; inputs otherwise trusted
+    (validation already bounds `type`/`complexity`).
+  - **Two-button chaos product intent (user) — recorded for Epic 12, not built here:** a *"break
+    something"* button = `POST /api/chaos/destroy-worker` (hard SIGKILL a worker → reaper (Epic 9)
+    + autoscaler (Epic 11) recovery; does **not** touch `simulate.py`), and a *"chaos"* button =
+    `POST /api/chaos/inject-failures` (biases outcomes via `failure_bias`). Both already in Epic 12's scope.
+  - **Phasing:** (1) pytest config in `worker/pyproject.toml` + `simulate.py` duration profile +
+    duration tests; (2) failure profile + `simulated_outcome(..., failure_bias=0.0)` + outcome/bias/
+    clamp/coverage tests. ~120–160 lines, no `pytest-asyncio` (pure/sync).
+  - **As built (implementation):**
+    - `worker/simulate.py` (two pure functions `simulated_duration_ms` / `simulated_job_succeeds`
+      + the `BASE_DURATION_MS` / `BASE_FAILURE_RATE` / `JITTER_RANGE` constants and a private
+      `_require_known_type` guard); `worker/tests/test_simulate.py` (17 tests); `worker/pyproject.toml`
+      gained `[tool.pytest.ini_options]` (`testpaths=["tests"]`, `pythonpath=["."]`) and ruff
+      `src=["."]`. Tests inject a small `FixedRandom` stub (pins jitter + the pass/fail draw) so
+      the §5.4 formula is asserted exactly, plus a seeded `random.Random` for the jitter-range band.
+    - **Deviation:** under ruff `src=["."]` the local `simulate` import sorts as first-party, so
+      isort split it into its own group (cosmetic). Removed the now-stale `worker/.gitkeep`
+      placeholder (real worker source now lives there). No new dependencies; `uv.lock` untouched.
+    - **Verified:** `ruff check` + `ruff format --check` clean; `pytest` green (17 passed, ~0.02s,
+      no Docker/Redis). Ran against `worker/.venv` (`uv` not on PATH on this machine).
+  - **Review fixes (8a):**
+    - *Outcome function renamed (approach change).* `simulated_outcome` → `simulated_job_succeeds`
+      so the name reads as a yes/no and conveys polarity (`True` = the simulated job succeeds),
+      per CLAUDE.md's boolean-naming rule. Keeps the `simulated_` pairing with
+      `simulated_duration_ms`. Epic 8b/12 call the new name (no callers exist yet; signature is
+      otherwise unchanged). Tests updated; supersedes the `simulated_outcome` name used in the
+      plan-time bullets above.
+    - *`rng` parameter kept (review nit rejected).* CLAUDE.md's "no abbreviations" rule would
+      favour a fuller name, but `rng: random.Random` is a near-universal idiom and the type
+      annotation removes ambiguity, so the keyword-only `rng` stays as recorded at plan time.
+
+## Epic 8b — Worker claim loop & image
+- **Intent:** A genuine container worker that claims a job, runs it via the simulate
+  profiles, and acks/nacks — the consumer side of the core flow, draining a real batch.
+- **Scope:** `worker/worker.py` (async claim loop: `claim(worker_id, timeout)` → run
+  via `simulate` → `ack`/`nack`; worker-id derivation; finite poll timeout).
+  `worker/Dockerfile` vendors `backend/app/queue` **and** `backend/app/config.py` and
+  sets the `CMD`; `worker/pyproject.toml` gains `pydantic` + `pydantic-settings`.
+  Integration test: worker drains a submitted batch through real Redis (in-process
+  against testcontainers).
+- **Verification:** Build the worker image; run a container against compose Redis with a
+  seeded batch → counts move queued→running→completed/failed. Pytest drains a batch
+  in-process and asserts terminal states + counts.
+- **Depends on:** Epic 8a.
+- **Implementation notes:** Worker reuses the backend `Settings` by vendoring
+  `backend/app/config.py` — forced, because `app.queue.client` imports
+  `from app.config import settings` (not a worker-local config).
+
+## Epic 8c — Worker heartbeat, registration & graceful shutdown
+- **Intent:** Make the worker a well-behaved citizen — registered and heartbeating in
+  `ql:workers` (for the autoscaler/chaos to see), with graceful SIGTERM that cleanly
+  returns its in-flight job.
+- **Scope:** `ql:workers` registration + periodic heartbeat (new `WORKERS_KEY` constant
+  + helper in `backend/app/queue`, the shared source of truth the autoscaler reads); a
+  dedicated clean requeue (new `requeue` method + `requeue.lua` in `app/queue`);
+  graceful SIGTERM handler (stop claiming → requeue in-flight job → exit); hard SIGKILL
+  left to lease-expiry recovery (Epic 9). Tests for registration, requeue, and graceful
+  shutdown.
+- **Verification:** Pytest: SIGTERM (graceful) requeues the in-flight job to
+  `ql:queue:ready` as `queued` without consuming a retry; the worker appears in
+  `ql:workers` and refreshes its heartbeat; the requeue clears the lease +
+  `ql:processing:{worker_id}` entry.
+- **Depends on:** Epic 8b.
+- **Implementation notes:** Graceful SIGTERM uses a dedicated clean requeue (new
+  `requeue` method + `requeue.lua` in `app/queue`) that returns the in-flight job to
+  `ql:queue:ready` as `queued` and clears the lease/processing entry **without
+  incrementing `attempts`** — graceful drain never burns a retry or fails a
+  last-attempt job. Hard SIGKILL is intentionally unhandled here; it relies on
+  lease-expiry recovery via the Epic 9 reaper. (Rejected reusing `nack`, which burns a
+  retry.)
 
 ## Epic 9 — Reaper (delayed promotion & lease recovery)
 - **Intent:** The chaos-recovery path — promote due delayed jobs and requeue jobs
@@ -426,7 +510,7 @@ explicit and acyclic.
 - **Verification:** Pytest integration: a job whose lease deadline passes is requeued
   as `retrying`; after `max_retries` it becomes `failed`; delayed jobs promote on
   schedule.
-- **Depends on:** Epic 8.
+- **Depends on:** Epic 8c.
 
 ## Epic 10 — Durable-writer & real-time broadcaster
 - **Intent:** Decouple producers from the socket: persist final outcomes and fan
