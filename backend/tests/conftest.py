@@ -19,6 +19,7 @@ from app.db.base import Base
 from app.db.engine import Database
 from app.queue.client import JobQueue
 from app.queue.protocol import JobRecord
+from app.services.rate_limit import RateLimiter
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import create_async_engine
 from testcontainers.postgres import PostgresContainer
@@ -58,6 +59,12 @@ async def redis_client(redis_url):
 async def queue(redis_client):
     """A JobQueue bound to the per-test Redis client."""
     return JobQueue(redis_client)
+
+
+@pytest_asyncio.fixture
+async def rate_limiter(redis_client):
+    """A RateLimiter bound to the per-test Redis client."""
+    return RateLimiter(redis_client)
 
 
 @pytest.fixture(scope="session")

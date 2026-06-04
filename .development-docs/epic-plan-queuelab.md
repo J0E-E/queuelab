@@ -233,7 +233,7 @@ explicit and acyclic.
   `uvicorn app.main:app` boots, `GET /health` → 200, `POST /api/session` →
   `{session_id, guest_handle: "guest-pink", color: "#ff5fd2"}` (handle/color matched).
 
-## Epic 6 — Guardrails: rate limiting & validation
+## Epic 6 — Guardrails: rate limiting & validation — **COMPLETED**
 - **Intent:** Per-session token-bucket rate limiting and reusable validation/cap
   enforcement, surfaced in the system voice.
 - **Scope:** `backend/app/services/rate_limit.py` (Redis token bucket: 1 submit/5s,
@@ -243,6 +243,50 @@ explicit and acyclic.
 - **Verification:** Pytest: bucket allows/denies on schedule; over-cap and
   at-capacity produce 422/429/409 with correct messages.
 - **Depends on:** Epic 5.
+
+### Implementation notes
+- **Token bucket in Lua, capacity 1.** `backend/app/services/scripts/token_bucket.lua`
+  is the bucket math — atomic, with `redis.call('TIME')` as the one clock (mirrors the
+  queue's `claim.lua`/`reap.lua`). Capacity is fixed at **1** (no burst): one action,
+  then a full interval's wait — exactly "1 submission / 5s". The script reads/refills
+  (`elapsed_ms / refill_ms` tokens, capped) and spends in one step, and `PEXPIRE`s the
+  bucket once it would be full again so idle sessions self-clean. Returns
+  `{allowed, retry_after_ms}`.
+- **`RateLimiter` mirrors `JobQueue`.** `backend/app/services/rate_limit.py` is an
+  injected-Redis client with `from_settings()`/`aclose()` and a `register_script`
+  callable. `check_submission`/`check_chaos` read `submit_rate_seconds`/`chaos_rate_seconds`
+  and key the bucket `ql:ratelimit:{action}:{session_id}` so submit and chaos budgets are
+  independent. A denial raises `RateLimitedError`; `retry_after_seconds = max(1,
+  ceil(retry_after_ms / 1000))`.
+- **Error shaping lives in one module.** `backend/app/services/guardrails.py` holds the
+  guardrail exceptions and `register_guardrail_handlers(app)` so `rate_limit.py` and
+  `validation.py` import the error types without importing each other (no cycle). Mapping:
+  `InvalidSubmissionError → 422`, `RateLimitedError → 429` (+ `Retry-After` header),
+  `QueueFullError → 409`. We **reuse the existing `QueueFullError`** (from
+  `app.queue.protocol`) for 409 rather than inventing a second capacity exception.
+- **429 message vs header (decision).** The body `detail` states the rule
+  (`[WARN] rate limit: 1 submission / 5s`), while the precise remaining wait goes in the
+  `Retry-After` header — a stable, descriptive message plus an exact machine-readable wait.
+- **Validation helpers.** `backend/app/services/validation.py`:
+  `validate_submission_count` (pure) rejects `< 1` or `> max_jobs_per_submission` with
+  `[ERR] --count exceeds cap (max N)` / `[ERR] --count must be at least 1`;
+  `ensure_within_capacity(queue)` (async) pre-checks `total_queued()` and raises
+  `QueueFullError` at the cap. `JobQueue.enqueue`'s own soft check stays as a backstop.
+- **Pre-wired for Epic 7 (decision).** `main.py` lifespan now builds
+  `app.state.rate_limiter = RateLimiter.from_settings()` (closed on shutdown), adds a
+  `get_rate_limiter` dependency provider, and calls `register_guardrail_handlers(app)`.
+  Harmless until a route raises a guardrail error — `POST /api/jobs` (Epic 7) is the first.
+- **Tests.** `test_rate_limit.py` (7, real Redis) — allow→deny→refill on schedule via
+  rewinding the bucket's `updated_at_ms` into the past (the queue tests' time-travel
+  trick, no real sleeps), partial-wait `Retry-After` rounding, independent
+  sessions/actions, and a `from_settings` smoke. `test_validation.py` (5) — cap bounds
+  (unit) + at-capacity (real queue with the ready list stuffed). `test_guardrails.py` (3)
+  — a throwaway FastAPI app proves 422/429/409 shaping, the `Retry-After` header, and
+  the system-voice `detail`. A `rate_limiter` fixture was added to `conftest.py`.
+- **Verified:** Ruff lint + format clean; `pytest` green (50 tests: 35 prior + 15 new)
+  against an auto-spun real Redis; the app still boots (the `test_app.py` lifespan smoke
+  runs `RateLimiter.from_settings()`). No new dependencies. Requires a Docker daemon for
+  the integration suite.
 
 ## Epic 7 — Job submission & job-records endpoints
 - **Intent:** Submit a validated batch into the queue and read back durable job
