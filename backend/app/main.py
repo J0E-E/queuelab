@@ -16,15 +16,17 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 
 # Re-exported here so existing imports of ``app.main.get_queue`` keep working; the providers
 # themselves live in app.dependencies to avoid an import cycle with the routers.
+from app.config import settings
 from app.db.engine import Database
 from app.dependencies import get_database, get_queue, get_rate_limiter, get_session_store
 from app.queue.client import JobQueue
+from app.reaper import run_reaper
 from app.routers import jobs, session
 from app.services.guardrails import register_guardrail_handlers
 from app.services.rate_limit import RateLimiter
@@ -42,9 +44,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.database = Database.from_settings()
     app.state.rate_limiter = RateLimiter.from_settings()
     app.state.session_store = SessionStore.from_settings()
+    # The reaper sweeps Redis on a tick to promote due delayed jobs and requeue expired
+    # leases (Epic 9). It runs for the life of the process and is cancelled on shutdown.
+    reaper_task = asyncio.create_task(
+        run_reaper(app.state.queue, interval_seconds=settings.reaper_loop_seconds)
+    )
+    app.state.reaper_task = reaper_task
     try:
         yield
     finally:
+        # Stop the reaper before closing the clients, so an in-flight sweep never hits a
+        # closed Redis client.
+        reaper_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await reaper_task
         # Close every client independently. Running them together (gather) and keeping
         # any error instead of raising (return_exceptions=True) means a failure closing
         # one client can't skip closing the others and leak their connection pools.

@@ -55,6 +55,12 @@ class Settings(BaseSettings):
     default_max_retries: PositiveInt = 3
     default_retry_delay_ms: PositiveInt = 2000
 
+    # ---- Reaper (recovery loop, TDD §5.3) ----
+    # How often the api process's reaper sweeps: promote due delayed (retrying) jobs back to
+    # the ready queue and requeue jobs whose claim deadline (lease) lapsed. A ~1-2s tick,
+    # mirroring the autoscaler control loop.
+    reaper_loop_seconds: PositiveInt = 2
+
     # ---- Autoscaler thresholds (TDD §5.5) ----
     # min_workers may be 0 (scale all the way down when idle); scale_down_threshold may be
     # 0 (only scale down when the queue is fully empty).

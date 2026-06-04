@@ -37,6 +37,18 @@ def test_app_boots_and_health_is_ok():
     assert response.json() == {"status": "ok"}
 
 
+def test_lifespan_runs_and_cancels_the_reaper():
+    """The lifespan starts the reaper task on boot and cancels it cleanly on shutdown.
+
+    The default 2s tick means no sweep fires inside this brief context, so the loop never
+    touches Redis — only its start/cancel lifecycle is exercised here (no container needed).
+    """
+    with TestClient(app):
+        reaper_task = app.state.reaper_task
+        assert not reaper_task.done()
+    assert reaper_task.cancelled()
+
+
 def test_create_session_returns_a_valid_identity():
     """``POST /api/session`` returns ``{session_id, guest_handle, color}`` in valid shape."""
     app.dependency_overrides[get_session_store] = lambda: _NoopSessionStore()

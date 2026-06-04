@@ -663,7 +663,7 @@ explicit and acyclic.
     8b convention of reporting the full suite). Both ran against an auto-spun real Redis 7 /
     Postgres 16 via testcontainers.
 
-## Epic 9 — Reaper (delayed promotion & lease recovery)
+## Epic 9 — Reaper (delayed promotion & lease recovery) — **COMPLETED**
 - **Intent:** The chaos-recovery path — promote due delayed jobs and requeue jobs
   whose lease lapsed (dead worker), making "destroy a worker → job retried" real.
 - **Scope:** Reaper background loop in the api process: move `ql:queue:delayed` →
@@ -674,6 +674,50 @@ explicit and acyclic.
   as `retrying`; after `max_retries` it becomes `failed`; delayed jobs promote on
   schedule.
 - **Depends on:** Epic 8c.
+
+### Implementation notes
+- **No new queue mechanics — just the loop.** Epic 3 already built the atomic recovery
+  sweep (`reap.lua` + `JobQueue.reap()` returning `(promoted, recovered)`, plus the
+  `promote_due_delayed`/`reap_expired_leases` wrappers) and tested it directly. Nothing
+  called it on a schedule, so at runtime delayed jobs never promoted and dead-worker leases
+  never requeued. Epic 9 adds only the periodic driver.
+- **`backend/app/reaper.py` = one module function.** `run_reaper(queue, *, interval_seconds)`
+  mirrors the worker's background-task pattern (`_heartbeat_until_cancelled`): sleep-first,
+  best-effort (a failed sweep is logged via `logging.exception` and the loop carries on to
+  the next tick — a transient Redis blip never stops recovery), and stops only on
+  `task.cancel()`. It logs an `info` line only when a sweep actually promoted or recovered
+  work (no per-tick noise). Background *loops* in this repo are module functions; only the
+  *clients* are classes.
+- **Config `reaper_loop_seconds: PositiveInt = 2`** (config.py + `.env.example`, one-to-one),
+  mirroring `autoscaler_loop_seconds=2` and the TDD's ~1-2s loops. Env-overridable.
+- **Lifespan wiring (main.py).** The reaper task is started right after the datastore clients
+  are built and **cancelled before** they are closed (so an in-flight sweep never hits a
+  closed Redis client): `reaper_task.cancel()` → `with suppress(asyncio.CancelledError): await
+  reaper_task` → the existing `gather(...aclose())`. The task is stashed on
+  `app.state.reaper_task` (consistent with the other lifespan-owned resources, and for later
+  observability / the boot-smoke assertion). Always-on, no enable/disable flag — single-EC2
+  deploy is one api process, and `reap.lua` is atomic so even a double-sweep is safe.
+- **Tests are loop-level, not queue-level** (the queue mechanics are already covered in
+  `test_queue.py`). `backend/tests/test_reaper.py` (4, real Redis) runs `run_reaper` as a task
+  at a 20ms tick and asserts the loop, *on its own*, (a) promotes a due delayed job to
+  `queued`, (b) requeues an expired-lease job to `retrying` (attempts++, processing/lease
+  cleared), (c) sends a retry-exhausted (`max_retries=0`) expired-lease job terminal `failed`
+  — which drives `reap.lua`'s failed branch, previously only reached via `nack`, never via the
+  reap path — and (d) keeps ticking after a monkeypatched transient sweep failure. Uses the
+  existing score-rewrite time-travel trick (no real sleeps) and a local `_poll_until` helper
+  mirroring the worker suite's (PEP 695 inline generic; re-implemented here because `worker` is
+  a separate package) to observe the concurrent loop without flaky fixed sleeps. `test_app.py`
+  gained a container-free smoke that the lifespan starts the reaper task and cancels it cleanly
+  on shutdown.
+- **Verified:** ruff lint + format clean on the backend tree; backend `pytest` **88 passed**
+  (83 prior + 4 reaper + 1 lifespan smoke) against an auto-spun real Redis 7 / Postgres 16 via
+  testcontainers. Ran against `backend/.venv` (`uv` not on PATH on this machine).
+- **Completion gate (9):** Re-ran the full green gate at completion — ruff `check` +
+  `format --check` clean (42 files), backend suite **88 passed** against an auto-spun real
+  Redis 7 / Postgres 16, matching the Verified count. Diff is ~241 non-doc lines / 7 files;
+  over the ~150 rule of thumb but the overage is the loop-level integration tests
+  (`test_reaper.py`, 157 lines) — production code is ~68 lines for the single reaper-loop
+  concern, so kept whole (human-acknowledged at completion).
 
 ## Epic 10 — Durable-writer & real-time broadcaster
 - **Intent:** Decouple producers from the socket: persist final outcomes and fan

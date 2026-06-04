@@ -16,6 +16,7 @@ SETTINGS_ENV_VARS = (
     "VISIBILITY_TIMEOUT_SECONDS",
     "DEFAULT_MAX_RETRIES",
     "DEFAULT_RETRY_DELAY_MS",
+    "REAPER_LOOP_SECONDS",
     "MIN_WORKERS",
     "SCALE_UP_THRESHOLD",
     "SCALE_DOWN_THRESHOLD",
@@ -53,6 +54,9 @@ def test_defaults_match_tdd(clean_env):
     assert settings.visibility_timeout_seconds == 30
     assert settings.default_max_retries == 3
     assert settings.default_retry_delay_ms == 2000
+
+    # Reaper recovery loop (§5.3)
+    assert settings.reaper_loop_seconds == 2
 
     # Autoscaler (§5.5)
     assert settings.min_workers == 1
