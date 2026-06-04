@@ -288,7 +288,7 @@ explicit and acyclic.
   runs `RateLimiter.from_settings()`). No new dependencies. Requires a Docker daemon for
   the integration suite.
 
-## Epic 7 — Job submission & job-records endpoints
+## Epic 7 — Job submission & job-records endpoints — **COMPLETED**
 - **Intent:** Submit a validated batch into the queue and read back durable job
   records — the producer side of the core flow.
 - **Scope:** `backend/app/services/submission.py` (validate caps/rate/capacity, write
@@ -298,6 +298,110 @@ explicit and acyclic.
   in Postgres, IDs land on `ql:queue:ready`; over-limit paths return 422/429/409;
   `GET /api/jobs` pages records.
 - **Depends on:** Epic 6.
+
+### Implementation notes
+- **Identity travels in the request body (decision; `guest_handle` later removed).** The TDD
+  body (`{count, type, complexity, max_retries, retry_delay_ms}`) omits identity, but the durable
+  `job` row needs both `session_id` and `guest_handle` (NOT NULL). The body originally carried
+  both; review round 2 made the handle **server-derived** instead (see *Review fixes (4b — round
+  2)* below), so `JobSubmission` now carries only `session_id`. `max_retries`/`retry_delay_ms`
+  are optional and fall back to `default_max_retries` (3) / `default_retry_delay_ms` (2000).
+- **`JobType` enum is the canonical vocabulary.** `email|report|image|webhook` lives as a
+  `StrEnum` in `app/queue/protocol.py` beside `JobState`, so the worker (Epic 8, which vendors
+  `app/queue`) reads the same list for its per-type simulate profiles. `validate_job_type`,
+  `validate_complexity` (1..5), and `validate_retry_settings` (`max_retries` 0..10,
+  `retry_delay_ms` 0..60000) were added to `services/validation.py` with system-voice
+  `[ERR] ...` messages; the `JobSubmission` fields stay loosely typed so these checks shape the
+  422 rather than Pydantic's default error body.
+- **Capacity is batch-aware.** `ensure_within_capacity(queue, count=1)` gained a `count`
+  argument and now rejects when `total_queued() + count > max_total_queued`, so an over-large
+  batch is turned away up front instead of partially enqueued. The default keeps the Epic 6
+  callers and tests unchanged.
+- **Submission service order: validate → session → capacity → rate → write → enqueue.**
+  `submit_batch` runs the pure field checks first (422), then derives the trusted handle from the
+  session (422 if unknown), then batch capacity (409), then the rate limit (429), then commits one
+  `Job` row per job in a single transaction, then enqueues each to Redis (durable-first, per §5.12).
+  One `uuid4()` per job is the shared id for both the Postgres PK and the Redis `JobRecord.id`, so
+  Epic 10's durable-writer can match a state event to its row. (Order revised twice in review — see
+  both *Review fixes* blocks below.)
+- **Documented trade-offs (in code).** `batch_id` is a transient correlation id returned to the
+  client — there is no batch column, so it is not persisted. A batch is all-or-nothing
+  (`accepted == count`); there is no cross-store transaction, so a mid-batch enqueue failure can
+  strand committed rows — an accepted edge consistent with Epic 3's best-effort enqueue.
+- **`GET /api/jobs` shape (decision).** Returns a paged envelope
+  `{items, total, limit, offset}` (`JobPage`). `limit` defaults to 50 and is clamped to 1..200,
+  `offset` to 0..10000; rows are ordered `submitted_at` desc then `id` so a batch sharing one
+  timestamp pages stably. `session`/`state` are optional filters; an unknown `state` yields an
+  empty page rather than an error. `JobResponse` exposes `worker_id` (which worker ran a job)
+  but **not** `session_id` (revised in review — see *Review fixes* below).
+- **Dependency providers moved to `app/dependencies.py`.** `get_queue`/`get_database`/
+  `get_rate_limiter` were lifted out of `main.py` (which re-exports them) so the new
+  `routers/jobs.py` can import them without an import cycle. Routes use the
+  `Annotated[..., Depends(...)]` form (avoids Ruff `B008`).
+- **Tests.** `test_jobs.py` (14, real Redis + Postgres) drives the app through a new
+  `api_client` fixture — an httpx `AsyncClient` over `ASGITransport` with the queue/database/
+  rate_limiter dependencies overridden to the container fixtures, so route I/O stays on the
+  test event loop (a threaded `TestClient` would cross loops and break async psycopg/redis). It
+  covers the happy path (rows in Postgres + ids on `ql:queue:ready` + shared ids), the
+  422/429/409 guardrails (including out-of-range retry overrides), default vs custom retry
+  settings, that `session_id` is not exposed, and `GET` paging/filters/limit-and-offset
+  clamping. `test_validation.py` gained 11 unit cases for the new validators and batch-aware
+  capacity.
+- **Review fixes (4b).** Four findings applied:
+  1. *Retry overrides validated.* `max_retries`/`retry_delay_ms` were written to the durable
+     columns unchecked, so an out-of-range value caused an unhandled `500` (smallint/integer
+     overflow) and a negative value stored silently. `validate_retry_settings` now bounds them
+     (`max_retries` 0..10, `retry_delay_ms` 0..60000) and shapes a `422`.
+  2. *`session_id` dropped from `JobResponse`.* It is the rate-limit / identity key and
+     `GET /api/jobs` is unscoped, so exposing it let one visitor grief another's submit budget
+     or spoof attribution. Reversed the earlier "keep it" decision; `guest_handle` stays.
+  3. *Guardrail order reversed* to pure field checks → rate limit → capacity, so a malformed
+     request no longer burns the session's rate-limit budget before it is rejected.
+  4. *`offset` clamped* to 0..10000 (`MAX_PAGE_OFFSET`) so a caller can't request an
+     arbitrarily deep (expensive) page.
+  *Deferred (defer-to-note):* the mid-batch enqueue edge — a concurrent submission can fill the
+  queue between the up-front capacity check and the enqueue loop, returning `409` after some
+  rows committed. Already covered by *Documented trade-offs* above; accepted as best-effort
+  enqueue, to be revisited if it bites Epic 10's durable-writer.
+- **Review fixes (4b — round 2).** Three findings applied:
+  1. *Server-side identity binding (was: identity in the body).* The body's `session_id` and
+     `guest_handle` were both client-supplied with no server check, so a caller could submit under
+     any handle or rotate `session_id` to dodge the per-session rate limit. New
+     `backend/app/services/session_store.py` (`SessionStore`, mirrors `RateLimiter`) persists
+     `session_id → {guest_handle, color}` in Redis (`ql:session:{id}`) with a TTL; `POST /api/session`
+     now writes it (touches Epic 5's `routers/session.py`), and `submit_batch` derives the trusted
+     `guest_handle` from that record — `guest_handle` was dropped from `JobSubmission`. An
+     unknown/expired session raises `InvalidSubmissionError` → `422`
+     (`[ERR] unknown or expired session — refresh the page`). Adds `session_ttl_seconds` (default
+     86400) to config + `.env.example`. Wired a `get_session_store` provider through
+     `dependencies.py`/`main.py`; the container-free `test_app.py` session smoke overrides it with a
+     no-op store. *Deliberate deviation* from the earlier "stateless identity / handle in body"
+     decision — identity is still not authentication, but the handle is now non-spoofable and tied
+     to an issued session. Rotation isn't fully closed (a caller can still mint sessions via
+     `POST /api/session`, which isn't IP-limited) — left as a known gap.
+  2. *Docstring accuracy.* `JobSubmission`'s "deliberately loosely typed" claim was wrong (fields
+     are typed `int`/`str`); softened the module + class docstrings to say bad *values* get the
+     system-voice `[ERR]` while a wrong *type* falls back to Pydantic's default shape. No code change.
+  3. *Capacity before rate limit.* Reordered `submit_batch` guardrails to field → session → capacity
+     → rate limit, so a full-queue `409` no longer spends the session's rate-limit token.
+- **Review fixes (4b — round 3).** Two residual nits applied:
+  1. *Atomic session write.* `SessionStore.save` did `hset` then `expire` as two round-trips, so a
+     failed `expire` could leave a session key with no TTL (a leak). The two now go out as one
+     `MULTI`/`EXEC` transaction pipeline.
+  2. *Session minting throttled per IP.* `POST /api/session` was unthrottled, so a caller could
+     mint unlimited sessions and rotate them to dodge the per-session submit limit. Added
+     `RateLimiter.check_session(client_ip)` (new action `session`, bucket keyed by IP) and a new
+     `session_rate_seconds` setting (default 5, = the submit interval) so sessions can't be rotated
+     faster than submits anyway. The route reads the client IP from `X-Forwarded-For` (left-most
+     hop, trusting nginx to set/sanitize it — a deploy concern, Epic 19) and falls back to the
+     direct peer. `config.py` + `.env.example` gained the setting; the container-free `test_app.py`
+     smoke now also overrides the rate limiter with a no-op. New `test_session.py` (2 cases, real
+     Redis): the minted identity is bound server-side, and a second immediate mint from one IP is
+     `429`. *Note:* the bypass is now bounded, not fully eliminated — a distributed caller across
+     many IPs is still possible; accepted for a portfolio app.
+- **Verified:** Ruff lint + format clean; `pytest` green (78 tests: 75 Epic-7-original + 1
+  unknown-session + 2 session-endpoint) against an auto-spun real Redis + Postgres. No new
+  dependencies. Requires a Docker daemon for the integration suite.
 
 ## Epic 8 — Worker image & simulated work
 - **Intent:** A genuine container worker that claims jobs and runs simulated work —

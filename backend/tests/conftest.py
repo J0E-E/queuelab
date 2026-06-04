@@ -17,9 +17,13 @@ import pytest
 import pytest_asyncio
 from app.db.base import Base
 from app.db.engine import Database
+from app.dependencies import get_database, get_queue, get_rate_limiter, get_session_store
+from app.main import app
 from app.queue.client import JobQueue
 from app.queue.protocol import JobRecord
 from app.services.rate_limit import RateLimiter
+from app.services.session_store import SessionStore
+from httpx import ASGITransport, AsyncClient
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import create_async_engine
 from testcontainers.postgres import PostgresContainer
@@ -67,6 +71,12 @@ async def rate_limiter(redis_client):
     return RateLimiter(redis_client)
 
 
+@pytest_asyncio.fixture
+async def session_store(redis_client):
+    """A SessionStore bound to the per-test Redis client."""
+    return SessionStore(redis_client)
+
+
 @pytest.fixture(scope="session")
 def postgres_container():
     """A throwaway Postgres 16 container, shared across the whole test session.
@@ -102,6 +112,26 @@ async def db_session(database):
     """An open AsyncSession bound to the per-test Database."""
     async with database.session() as session:
         yield session
+
+
+@pytest_asyncio.fixture
+async def api_client(queue, database, rate_limiter, session_store):
+    """An httpx client driving the FastAPI app against the per-test container clients.
+
+    The app's lifespan would build its own ``from_settings()`` clients pointed at the compose
+    URLs, so instead we override the dependency providers to hand routes the test fixtures.
+    Driving the ASGI app directly (no lifespan) keeps all route I/O on this test's event loop —
+    the same loop the async Redis/Postgres fixtures live on — which a threaded TestClient would
+    not. Overrides are cleared after the test so cases stay isolated.
+    """
+    app.dependency_overrides[get_queue] = lambda: queue
+    app.dependency_overrides[get_database] = lambda: database
+    app.dependency_overrides[get_rate_limiter] = lambda: rate_limiter
+    app.dependency_overrides[get_session_store] = lambda: session_store
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
+    app.dependency_overrides.clear()
 
 
 @pytest.fixture

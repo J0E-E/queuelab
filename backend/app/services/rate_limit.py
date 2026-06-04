@@ -73,6 +73,21 @@ class RateLimiter:
             denied_message=f"[WARN] rate limit: 1 submission / {rate}s",
         )
 
+    async def check_session(self, client_ip: str) -> None:
+        """Allow one session minting per ``session_rate_seconds`` for this client IP.
+
+        Keyed by IP (not session id — there is no session yet) so a caller can't rotate fresh
+        identities faster than it could submit. Returns without raising when allowed; raises
+        :class:`RateLimitedError` (shaped to ``429``) when the IP is going too fast.
+        """
+        rate = settings.session_rate_seconds
+        await self._check(
+            action="session",
+            session_id=client_ip,
+            refill_seconds=rate,
+            denied_message=f"[WARN] rate limit: 1 session / {rate}s",
+        )
+
     async def check_chaos(self, session_id: str) -> None:
         """Allow one chaos action per ``chaos_rate_seconds`` for this session.
 

@@ -18,13 +18,19 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 
+# Re-exported here so existing imports of ``app.main.get_queue`` keep working; the providers
+# themselves live in app.dependencies to avoid an import cycle with the routers.
 from app.db.engine import Database
+from app.dependencies import get_database, get_queue, get_rate_limiter, get_session_store
 from app.queue.client import JobQueue
-from app.routers import session
+from app.routers import jobs, session
 from app.services.guardrails import register_guardrail_handlers
 from app.services.rate_limit import RateLimiter
+from app.services.session_store import SessionStore
+
+__all__ = ["app", "get_database", "get_queue", "get_rate_limiter", "get_session_store"]
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +41,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.queue = JobQueue.from_settings()
     app.state.database = Database.from_settings()
     app.state.rate_limiter = RateLimiter.from_settings()
+    app.state.session_store = SessionStore.from_settings()
     try:
         yield
     finally:
@@ -45,6 +52,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             app.state.queue.aclose(),
             app.state.database.aclose(),
             app.state.rate_limiter.aclose(),
+            app.state.session_store.aclose(),
             return_exceptions=True,
         )
         for result in results:
@@ -54,24 +62,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="QueueLab API", lifespan=lifespan)
 app.include_router(session.router)
+app.include_router(jobs.router)
 # Turn guardrail errors (caps, rate limits, full queue) into system-voiced HTTP responses.
-# Harmless until a route raises one — the producer endpoints (Epic 7) are the first to.
+# The producer endpoints (POST /api/jobs) are the first to raise them.
 register_guardrail_handlers(app)
-
-
-def get_queue(request: Request) -> JobQueue:
-    """Provide the shared queue client to a route (FastAPI dependency)."""
-    return request.app.state.queue
-
-
-def get_database(request: Request) -> Database:
-    """Provide the shared database client to a route (FastAPI dependency)."""
-    return request.app.state.database
-
-
-def get_rate_limiter(request: Request) -> RateLimiter:
-    """Provide the shared rate limiter to a route (FastAPI dependency)."""
-    return request.app.state.rate_limiter
 
 
 @app.get("/health")

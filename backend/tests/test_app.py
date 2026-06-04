@@ -7,9 +7,26 @@ are needed — the clients only connect on first command, which these routes nev
 
 from __future__ import annotations
 
+from app.dependencies import get_rate_limiter, get_session_store
 from app.main import app
 from app.services.identity import GUEST_COLORS
 from fastapi.testclient import TestClient
+
+
+class _NoopSessionStore:
+    """A stand-in session store that skips the Redis write, so this smoke test needs no
+    container; the endpoint's persistence is exercised in the integration suite."""
+
+    async def save(self, identity) -> None:
+        return None
+
+
+class _NoopRateLimiter:
+    """A stand-in rate limiter that always allows, so this smoke test needs no container;
+    the real throttling is exercised in the integration suite."""
+
+    async def check_session(self, client_ip) -> None:
+        return None
 
 
 def test_app_boots_and_health_is_ok():
@@ -22,8 +39,13 @@ def test_app_boots_and_health_is_ok():
 
 def test_create_session_returns_a_valid_identity():
     """``POST /api/session`` returns ``{session_id, guest_handle, color}`` in valid shape."""
-    with TestClient(app) as client:
-        response = client.post("/api/session")
+    app.dependency_overrides[get_session_store] = lambda: _NoopSessionStore()
+    app.dependency_overrides[get_rate_limiter] = lambda: _NoopRateLimiter()
+    try:
+        with TestClient(app) as client:
+            response = client.post("/api/session")
+    finally:
+        app.dependency_overrides.clear()
     assert response.status_code == 200
 
     body = response.json()

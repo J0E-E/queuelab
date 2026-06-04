@@ -62,6 +62,21 @@ class JobState(StrEnum):
     RETRYING = "retrying"
 
 
+class JobType(StrEnum):
+    """The kinds of work a guest can submit (TDD §2.1, §5.7).
+
+    This is the one canonical list of job types. It lives here in the queue protocol so the
+    worker (Epic 8), which vendors :mod:`app.queue`, reads the same vocabulary when it picks a
+    per-type duration and failure profile. The submission endpoint (Epic 7) validates the
+    requested type against these values and stores the chosen one verbatim.
+    """
+
+    EMAIL = "email"
+    REPORT = "report"
+    IMAGE = "image"
+    WEBHOOK = "webhook"
+
+
 # Field names inside the ``ql:counts`` hash. They mirror the state values exactly so a
 # Lua script can adjust a count by name with one step (``HINCRBY ql:counts <state> ±1``,
 # which adds ±1 to a hash field). ``queued``,

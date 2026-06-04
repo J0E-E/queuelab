@@ -40,6 +40,15 @@ class Settings(BaseSettings):
     # ---- Guardrails: per-session rate limits, token bucket (TDD §5.9) ----
     submit_rate_seconds: PositiveInt = 5
     chaos_rate_seconds: PositiveInt = 10
+    # Session minting is throttled per client IP at the submit interval, so a caller can't
+    # rotate fresh sessions faster than it could submit anyway.
+    session_rate_seconds: PositiveInt = 5
+
+    # ---- Guest sessions (identity binding) ----
+    # How long a minted guest identity stays valid server-side. The submission endpoint
+    # derives the trusted guest_handle from this record, so an abandoned session self-cleans
+    # once it expires (a day comfortably covers a single visit).
+    session_ttl_seconds: PositiveInt = 86_400
 
     # ---- Queue / lease behavior (TDD §5.3) ----
     visibility_timeout_seconds: PositiveInt = 30
