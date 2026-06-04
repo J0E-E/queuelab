@@ -460,7 +460,7 @@ explicit and acyclic.
       favour a fuller name, but `rng: random.Random` is a near-universal idiom and the type
       annotation removes ambiguity, so the keyword-only `rng` stays as recorded at plan time.
 
-## Epic 8b — Worker claim loop & image
+## Epic 8b — Worker claim loop & image — **COMPLETED**
 - **Intent:** A genuine container worker that claims a job, runs it via the simulate
   profiles, and acks/nacks — the consumer side of the core flow, draining a real batch.
 - **Scope:** `worker/worker.py` (async claim loop: `claim(worker_id, timeout)` → run
@@ -476,6 +476,84 @@ explicit and acyclic.
 - **Implementation notes:** Worker reuses the backend `Settings` by vendoring
   `backend/app/config.py` — forced, because `app.queue.client` imports
   `from app.config import settings` (not a worker-local config).
+  - **As built (8b):**
+    - **Vendoring = build-time, single source, repo-root build context** (user-chosen). The
+      `worker/Dockerfile` COPYs `backend/app/queue` + `backend/app/config.py` (+ `app/__init__.py`)
+      into the image's `app` package — no committed duplicate, so no drift. The build context is
+      the **repo root**: `docker build -f worker/Dockerfile -t queuelab-worker:latest .`.
+    - **`worker.py` = sequential claim loop.** `run_worker(queue, worker_id, *, poll_timeout=5.0,
+      max_idle_polls=None, rng=...)` claims one job at a time (`claim` blocks up to `poll_timeout`,
+      a finite wait), runs it via `simulate`, then `ack`s on success / `nack`s on failure. Helpers
+      `run_one_job` and `derive_worker_id` (= `socket.gethostname()`, the container short id, legible
+      later in `ql:workers`). `main()` runs `JobQueue.from_settings()` forever; `max_idle_polls`
+      (finite) is only for the test's bounded drain.
+    - **Out of scope here (per plan):** graceful SIGTERM + `ql:workers` registration are Epic 8c;
+      hard-kill recovery is Epic 9's reaper. Phase-1 finiteness is only the poll timeout + the
+      test's `max_idle_polls`.
+    - **`pyproject.toml`:** runtime gains `pydantic` + `pydantic-settings` (back the vendored
+      `app.config`/`app.queue`); dev gains `pytest-asyncio` + `testcontainers`; pytest
+      `pythonpath = ["../backend", "."]` resolves `app.queue`/`app.config` from the sibling backend
+      tree (the same code the image vendors) and `asyncio_mode = "auto"`. `worker/uv.lock`
+      regenerated (now 26 packages).
+    - **Tests:** `worker/tests/conftest.py` mirrors the backend harness (session Redis 7
+      testcontainer, per-test `flushdb`, `queue`, `make_job`, Windows selector-loop switch);
+      `test_worker.py` drives the **real** `run_worker` with a small injected `FixedRandom` stub —
+      draw `1.0` ⇒ every job `completed`; draw `0.0` + `max_retries=0` ⇒ every job terminally
+      `failed` — asserting counts and that leases/processing are cleared.
+    - **Deviation (found in verification):** `uv sync` installs into `/app/.venv`, so the CMD's
+      bare `python` couldn't see `redis`/`pydantic`. Added `PATH=/app/.venv/bin:$PATH` to the
+      Dockerfile `ENV` so `["python", "worker.py"]` runs the venv interpreter (the standard
+      uv-Docker pattern). Not in the plan; required to make the image actually run.
+    - **No `docker-compose.yml` worker service** — compose deliberately omits workers (the
+      autoscaler spawns them at runtime, Epic 11); verification used a manual `docker run`.
+    - **Review fix (8b):** *Error boundary in the claim loop.* `run_worker` now wraps
+      `run_one_job` in `try/except Exception`: a malformed job (bad payload / unknown type)
+      is `nack`ed (logged via `logging.getLogger(__name__)`) and the loop keeps claiming,
+      instead of an unhandled exception crashing the process and stranding the job in
+      `ql:processing:{worker_id}` until lease expiry (which would crash-loop the next worker
+      that claimed it). Inputs are still validated upstream (Epic 7); this is defense-in-depth.
+      New test `test_worker_survives_a_malformed_job`. Nacking (not bare logging) settles the
+      job the normal way — retry/backoff, or terminal `failed` once retries exhaust.
+    - **Review fix (8b):** *Lease renewal during long jobs (new queue surface, scope nudge).*
+      The original 8b worker slept the full duration without renewing the lease, relying on
+      simulated durations (max ~5.8s) staying under the 30s visibility timeout — the
+      at-least-once tradeoff from Epic 3. On review this was hardened to an explicit heartbeat
+      so durations can be tuned up safely. Added a new queue primitive in the **backend**
+      (vendored into the worker image): `backend/app/queue/scripts/renew.lua` (ownership-fenced,
+      re-stamps `ql:leases` from Redis `TIME`; no state change, so counts/pub-sub untouched —
+      mirrors `ack.lua`) + `JobQueue.renew_lease(job_id, worker_id)`. `run_one_job` now spawns
+      a background `_renew_lease_until_cancelled` task that renews every
+      `lease_renewal_seconds` (default = `visibility_timeout_seconds / 2`) and is cancelled the
+      moment the work finishes — short jobs never trigger one. `renew.lua` ships in the image
+      for free (the Dockerfile already COPYs all of `app/queue/scripts`). Tests:
+      `test_renew_lease_extends_the_deadline` + `test_renew_lease_from_superseded_worker_is_ignored`
+      (backend, real Redis), `test_worker_renews_the_lease_on_a_long_running_job` (worker,
+      spies on `renew_lease` for a ~900ms job at a 50ms interval). *Note:* this reaches into the
+      already-reviewed Epic 3 queue module — a deliberate, small expansion of 8b's surface,
+      accepted because lease-renewal belongs with the worker that needs it and the reaper
+      (Epic 9) already assumes leases can move.
+    - **Review fix (8b):** *Best-effort heartbeat.* `_renew_lease_until_cancelled` now catches
+      and logs renewal errors and keeps looping, instead of letting a renew exception propagate
+      out (which would have `nack`ed a job whose work actually succeeded, burning a retry on a
+      transient Redis blip). A failed renewal is now a no-op for the job's outcome; persistent
+      failures let the lease lapse so the reaper requeues — the accepted at-least-once path. The
+      heartbeat task now ends only via cancellation, so the `finally`'s `suppress(CancelledError)`
+      is the only exception it can surface.
+    - **Verified:** `ruff check` + `ruff format --check` clean; `pytest` green (19: 17 simulate +
+      2 worker drain, ~4s) against an auto-spun real Redis 7. Image builds from the repo root; the
+      container's vendored imports resolve and `derive_worker_id()` returns the container id. A
+      real container drained a seeded 5-job batch on the compose network: `queued 5 → completed 4
+      + retrying 1` (the `retrying` is a genuine ~2% simulated failure nacked into backoff, awaiting
+      the Epic 9 reaper to promote it — exactly the real queue mechanics). `uv` was run from
+      `backend/.venv/Scripts/uv.exe` (not on PATH on this machine).
+    - **Completion gate (8b):** Re-ran the full green gate at completion (the `(19: …)` count
+      above predates the review fixes, which added tests). `ruff check` + `ruff format --check`
+      clean on both trees. Worker suite **22 passed** = 17 simulate + 5 worker (2 drain +
+      `test_worker_survives_a_malformed_job` + `test_worker_renews_the_lease_on_a_long_running_job`
+      + `test_worker_completes_job_even_when_lease_renewal_fails`). Backend suite **80 passed** =
+      78 prior + the 2 `renew_lease` cases. Both ran against an auto-spun real Redis 7 / Postgres
+      16. The worker image rebuilds from the repo root and the container's vendored `app.config` /
+      `app.queue` imports resolve with `derive_worker_id()` returning the container short id.
 
 ## Epic 8c — Worker heartbeat, registration & graceful shutdown
 - **Intent:** Make the worker a well-behaved citizen — registered and heartbeating in

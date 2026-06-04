@@ -140,6 +140,44 @@ async def test_stale_ack_nack_from_superseded_worker_is_ignored(queue, redis_cli
     assert await queue.counts() == {**ALL_ZERO_COUNTS, "completed": 1}
 
 
+async def test_renew_lease_extends_the_deadline(queue, redis_client, make_job):
+    job = make_job()
+    await queue.enqueue(job)
+    await queue.claim("worker-1", timeout=1)
+
+    # Rewind the lease into the past, as if the deadline were about to pass, then renew it.
+    await redis_client.zadd(LEASES_KEY, {job.id: 0})
+    await queue.renew_lease(job.id, "worker-1")
+
+    # The deadline jumped forward to roughly now + the visibility timeout (well past "now").
+    seconds, _microseconds = await redis_client.time()
+    now_ms = seconds * 1000
+    new_deadline = await redis_client.zscore(LEASES_KEY, job.id)
+    assert new_deadline is not None
+    assert new_deadline > now_ms
+    # Renewing is not a state change: still running, still owned, counts untouched.
+    assert await redis_client.hget(job_key(job.id), "state") == "running"
+    assert await redis_client.hget(job_key(job.id), "worker_id") == "worker-1"
+    assert await queue.counts() == {**ALL_ZERO_COUNTS, "running": 1}
+
+
+async def test_renew_lease_from_superseded_worker_is_ignored(queue, redis_client, make_job):
+    # A renew from a worker that no longer owns the job must not resurrect its lease.
+    job = make_job(max_retries=2)
+    await queue.enqueue(job)
+    await queue.claim("worker-slow", timeout=1)
+
+    # worker-slow's claim (lease) expires; the recovery sweep (reaper) requeues the job and
+    # clears its owner.
+    await redis_client.zadd(LEASES_KEY, {job.id: 0})
+    await queue.reap_expired_leases()
+    assert await redis_client.zscore(LEASES_KEY, job.id) is None
+
+    # The zombie worker-slow tries to renew — it must be a no-op (no lease re-created).
+    await queue.renew_lease(job.id, "worker-slow")
+    assert await redis_client.zscore(LEASES_KEY, job.id) is None
+
+
 async def test_exhausted_retries_go_failed(queue, redis_client, make_job):
     job = make_job(max_retries=1)
     await queue.enqueue(job)

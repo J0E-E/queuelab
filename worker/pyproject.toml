@@ -5,17 +5,28 @@ description = "QueueLab worker — claims and runs simulated jobs from the custo
 requires-python = ">=3.12"
 dependencies = [
     "redis>=5.2",
+    # pydantic + pydantic-settings back the vendored `app.config` / `app.queue` (Epic 8b):
+    # the Dockerfile copies the backend queue protocol and Settings into the image, and
+    # `app.queue.client` builds JobRecords and reads `app.config.settings`.
+    "pydantic>=2.10",
+    "pydantic-settings>=2.6",
 ]
 
 [dependency-groups]
 dev = [
     "ruff>=0.8",
     "pytest>=8.3",
+    # The claim-loop integration test drains a batch through a real Redis (testcontainers)
+    # on the async event loop, mirroring the backend suite.
+    "pytest-asyncio>=0.24",
+    "testcontainers>=4.8",
 ]
 
 # Match the backend Ruff lint rules so both trees lint identically. The worker uses a flat
-# layout (simulate.py at the package root), so `src` / pytest `pythonpath` point at "." so
-# `import simulate` resolves from worker/tests/.
+# layout (simulate.py / worker.py at the package root), so `src` / pytest `pythonpath`
+# include "." so `import simulate` / `import worker` resolve. The integration test drives the
+# real backend queue, which lives one directory up, so the test `pythonpath` also includes
+# "../backend" — the Dockerfile vendors that same `app.queue` + `app.config` into the image.
 [tool.ruff]
 target-version = "py312"
 line-length = 100
@@ -26,4 +37,5 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]
+pythonpath = ["../backend", "."]
+asyncio_mode = "auto"

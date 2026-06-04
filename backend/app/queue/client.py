@@ -53,6 +53,7 @@ def _decodes_responses(redis: Redis) -> bool:
 _CLAIM_SOURCE = _load_script("claim")
 _ACK_SOURCE = _load_script("ack")
 _NACK_SOURCE = _load_script("nack")
+_RENEW_SOURCE = _load_script("renew")
 _REAP_SOURCE = _load_script("reap")
 
 
@@ -73,6 +74,7 @@ class JobQueue:
         self._claim: AsyncScript = redis.register_script(_CLAIM_SOURCE)
         self._ack: AsyncScript = redis.register_script(_ACK_SOURCE)
         self._nack: AsyncScript = redis.register_script(_NACK_SOURCE)
+        self._renew: AsyncScript = redis.register_script(_RENEW_SOURCE)
         self._reap: AsyncScript = redis.register_script(_REAP_SOURCE)
 
     @classmethod
@@ -166,6 +168,19 @@ class JobQueue:
                 COUNTS_KEY,
             ],
             args=[job_id, worker_id, settings.redis_job_ttl_seconds, error, STATE_CHANNEL],
+        )
+
+    async def renew_lease(self, job_id: str, worker_id: str) -> None:
+        """Push out the claim deadline (lease) for a job this worker is still running.
+
+        A worker calls this periodically while a long job runs so the recovery sweep (reaper)
+        doesn't treat a slow-but-alive worker as dead and put its in-flight job back on the
+        queue (requeue). Does nothing and returns (no-op) if ``worker_id`` no longer owns the
+        job — the same stale-owner fence as :meth:`ack` / :meth:`nack`.
+        """
+        await self._renew(
+            keys=[job_key(job_id), LEASES_KEY],
+            args=[job_id, worker_id, settings.visibility_timeout_seconds * 1000],
         )
 
     # ---- Recovery (used by the reaper loop, Epic 9) ------------------------------
