@@ -9,7 +9,11 @@ outcome is deterministic — no flakiness. Requires a Docker daemon.
 
 from __future__ import annotations
 
-from app.queue.protocol import LEASES_KEY, job_key, processing_key
+import asyncio
+import contextlib
+from collections.abc import Awaitable, Callable
+
+from app.queue.protocol import DELAYED_KEY, LEASES_KEY, job_key, processing_key
 
 from worker import run_worker
 
@@ -17,6 +21,22 @@ from worker import run_worker
 # of 0.0 is below any non-zero probability, so it always fails.
 ALWAYS_SUCCEEDS_DRAW = 1.0
 ALWAYS_FAILS_DRAW = 0.0
+
+
+async def _poll_until[PollResult](
+    check: Callable[[], Awaitable[PollResult]], *, attempts: int = 150, interval: float = 0.02
+) -> PollResult:
+    """Poll ``check`` until it returns a truthy result, then return it; fail if it never does.
+
+    Lets a test wait for the concurrently-running worker to reach a state (registered, a job
+    claimed, the heartbeat advanced) without a fixed sleep that would be flaky.
+    """
+    for _ in range(attempts):
+        result = await check()
+        if result:
+            return result
+        await asyncio.sleep(interval)
+    raise AssertionError("condition was not met within the poll window")
 
 
 class FixedRandom:
@@ -172,3 +192,99 @@ async def test_worker_completes_job_even_when_lease_renewal_fails(
     assert await redis_client.hget(job_key(job.id), "state") == "completed"
     assert await redis_client.zcard(LEASES_KEY) == 0
     assert await redis_client.lrange(processing_key(worker_id), 0, -1) == []
+
+
+async def test_worker_registers_and_refreshes_its_heartbeat(queue, redis_client):
+    """The worker appears in ql:workers, refreshes its heartbeat, and deregisters on exit."""
+    worker_id = "worker-test"
+    stop_event = asyncio.Event()
+
+    async def _worker_record():
+        return (await queue.list_workers()).get(worker_id)
+
+    # Run the worker with nothing to claim; it should still register and keep heartbeating.
+    worker_task = asyncio.create_task(
+        run_worker(
+            queue,
+            worker_id,
+            poll_timeout=0.05,
+            stop_event=stop_event,
+            heartbeat_seconds=0.05,
+        )
+    )
+    try:
+        # It registers up front as idle, with no current job.
+        registered = await _poll_until(_worker_record)
+        assert registered["state"] == "idle"
+        assert registered["current_job"] is None
+        first_heartbeat = registered["last_heartbeat"]
+
+        # The heartbeat keeps refreshing while the worker runs.
+        async def _heartbeat_advanced():
+            record = await _worker_record()
+            if record is not None and record["last_heartbeat"] > first_heartbeat:
+                return record
+            return None
+
+        await _poll_until(_heartbeat_advanced)
+    finally:
+        stop_event.set()
+        await worker_task
+
+    # A cleanly stopped worker removes itself from the registry.
+    assert await queue.list_workers() == {}
+
+
+async def test_graceful_shutdown_requeues_the_in_flight_job(queue, redis_client, make_job):
+    """A graceful stop hands the in-flight job back to ready as `queued`, no retry consumed."""
+    worker_id = "worker-test"
+    job = make_job(max_retries=2)
+    await queue.enqueue(job)
+
+    stop_event = asyncio.Event()
+    # jitter 3.0 stretches the email/complexity-1 job to ~900ms, so there is a comfortable
+    # window to stop the worker while the job is still mid-flight.
+    long_running = FixedRandom(draw_value=ALWAYS_SUCCEEDS_DRAW, jitter_value=3.0)
+    worker_task = asyncio.create_task(
+        run_worker(
+            queue,
+            worker_id,
+            poll_timeout=0.05,
+            rng=long_running,
+            lease_renewal_seconds=0.05,
+            stop_event=stop_event,
+            heartbeat_seconds=0.05,
+        )
+    )
+    try:
+        # Wait until the job is actually claimed and running, then ask the worker to stop.
+        async def _job_is_running():
+            return (await queue.counts())["running"] == 1
+
+        await _poll_until(_job_is_running)
+        stop_event.set()
+        await worker_task
+    finally:
+        if not worker_task.done():
+            worker_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await worker_task
+
+    # The in-flight job is back on the ready queue as `queued`, owner cleared, no retry burned.
+    assert await queue.queue_depth() == 1
+    assert await redis_client.hget(job_key(job.id), "state") == "queued"
+    assert await redis_client.hget(job_key(job.id), "worker_id") is None
+    assert int(await redis_client.hget(job_key(job.id), "attempts")) == 0
+    # The in-flight claim is gone and it never went onto the delayed (retry) set.
+    assert await redis_client.zscore(LEASES_KEY, job.id) is None
+    assert await redis_client.zscore(DELAYED_KEY, job.id) is None
+    assert await redis_client.lrange(processing_key(worker_id), 0, -1) == []
+    assert await queue.counts() == {
+        "queued": 1,
+        "running": 0,
+        "completed": 0,
+        "failed": 0,
+        "retrying": 0,
+    }
+    # The worker deregistered on its way out.
+    assert await queue.list_workers() == {}

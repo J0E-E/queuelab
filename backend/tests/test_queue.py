@@ -8,6 +8,7 @@ recovery sweep and moving jobs back to ready) rather than sleeping out the real 
 """
 
 import asyncio
+import json
 
 import pytest
 from app.config import settings as app_settings
@@ -15,6 +16,7 @@ from app.queue.protocol import (
     DELAYED_KEY,
     LEASES_KEY,
     READY_KEY,
+    WORKERS_KEY,
     QueueFullError,
     job_key,
     processing_key,
@@ -176,6 +178,90 @@ async def test_renew_lease_from_superseded_worker_is_ignored(queue, redis_client
     # The zombie worker-slow tries to renew — it must be a no-op (no lease re-created).
     await queue.renew_lease(job.id, "worker-slow")
     assert await redis_client.zscore(LEASES_KEY, job.id) is None
+
+
+async def test_requeue_returns_job_to_ready_without_burning_a_retry(queue, redis_client, make_job):
+    # Graceful shutdown hands an in-flight job straight back to the ready queue as `queued`,
+    # clearing the claim, and crucially without counting it as a failed attempt.
+    job = make_job(max_retries=2)
+    await queue.enqueue(job)
+    await queue.claim("worker-1", timeout=1)
+    assert await queue.counts() == {**ALL_ZERO_COUNTS, "running": 1}
+
+    await queue.requeue(job.id, "worker-1")
+
+    # Back on the ready queue as `queued`, owner cleared, no retry consumed.
+    assert await queue.queue_depth() == 1
+    assert await redis_client.hget(job_key(job.id), "state") == "queued"
+    assert await redis_client.hget(job_key(job.id), "worker_id") is None
+    assert int(await redis_client.hget(job_key(job.id), "attempts")) == 0
+    # The in-flight claim (processing list + lease) is gone, and it is not on the delayed set.
+    assert await redis_client.lrange(processing_key("worker-1"), 0, -1) == []
+    assert await redis_client.zscore(LEASES_KEY, job.id) is None
+    assert await redis_client.zscore(DELAYED_KEY, job.id) is None
+    assert await queue.counts() == {**ALL_ZERO_COUNTS, "queued": 1}
+
+    # A healthy worker can pick it straight back up.
+    reclaimed = await queue.claim("worker-2", timeout=1)
+    assert reclaimed is not None
+    assert reclaimed.id == job.id
+    assert reclaimed.attempts == 0
+
+
+async def test_requeue_from_superseded_worker_is_ignored(queue, redis_client, make_job):
+    # A requeue from a worker that no longer owns the job must not disturb the new holder.
+    job = make_job(max_retries=2)
+    await queue.enqueue(job)
+    await queue.claim("worker-slow", timeout=1)
+
+    # worker-slow's claim (lease) expires; the recovery sweep (reaper) requeues the job, it is
+    # promoted back to ready, and a fresh worker reclaims it.
+    await redis_client.zadd(LEASES_KEY, {job.id: 0})
+    await queue.reap_expired_leases()
+    await redis_client.zadd(DELAYED_KEY, {job.id: 0})
+    await queue.promote_due_delayed()
+    reclaimed = await queue.claim("worker-fresh", timeout=1)
+    assert reclaimed is not None
+    assert reclaimed.worker_id == "worker-fresh"
+    lease_before = await redis_client.zscore(LEASES_KEY, job.id)
+
+    # The zombie worker-slow now tries to requeue — it must do nothing.
+    await queue.requeue(job.id, "worker-slow")
+
+    assert await redis_client.hget(job_key(job.id), "state") == "running"
+    assert await redis_client.hget(job_key(job.id), "worker_id") == "worker-fresh"
+    assert await redis_client.zscore(LEASES_KEY, job.id) == lease_before
+    assert await redis_client.lrange(processing_key("worker-fresh"), 0, -1) == [job.id]
+    assert await queue.counts() == {**ALL_ZERO_COUNTS, "running": 1}
+
+
+async def test_heartbeat_registers_refreshes_and_deregisters(queue, redis_client):
+    # First heartbeat registers the worker; the registry records its state and current job.
+    await queue.heartbeat("worker-1", state="busy", current_job="job-abc")
+    workers = await queue.list_workers()
+    assert set(workers) == {"worker-1"}
+    record = workers["worker-1"]
+    assert record["state"] == "busy"
+    assert record["current_job"] == "job-abc"
+    first_heartbeat = record["last_heartbeat"]
+    assert isinstance(first_heartbeat, int)
+
+    # Rewind the stored heartbeat into the past, then heartbeat again — last_heartbeat moves
+    # forward and the state is updated (registration and refresh are one upsert).
+    stale = json.dumps(
+        {"state": "busy", "current_job": "job-abc", "last_heartbeat": 0},
+        separators=(",", ":"),
+    )
+    await redis_client.hset(WORKERS_KEY, "worker-1", stale)
+    await queue.heartbeat("worker-1", state="idle", current_job=None)
+    refreshed = (await queue.list_workers())["worker-1"]
+    assert refreshed["state"] == "idle"
+    assert refreshed["current_job"] is None
+    assert refreshed["last_heartbeat"] > 0
+
+    # Deregister removes the worker entirely (a cleanly stopped worker disappears at once).
+    await queue.deregister_worker("worker-1")
+    assert await queue.list_workers() == {}
 
 
 async def test_exhausted_retries_go_failed(queue, redis_client, make_job):

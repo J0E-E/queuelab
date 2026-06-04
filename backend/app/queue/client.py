@@ -12,6 +12,7 @@ Redis ``TIME``; this client passes only durations sourced from :mod:`app.config`
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from redis.asyncio import Redis
@@ -26,6 +27,7 @@ from .protocol import (
     LEASES_KEY,
     READY_KEY,
     STATE_CHANNEL,
+    WORKERS_KEY,
     JobRecord,
     QueueFullError,
     job_key,
@@ -54,6 +56,7 @@ _CLAIM_SOURCE = _load_script("claim")
 _ACK_SOURCE = _load_script("ack")
 _NACK_SOURCE = _load_script("nack")
 _RENEW_SOURCE = _load_script("renew")
+_REQUEUE_SOURCE = _load_script("requeue")
 _REAP_SOURCE = _load_script("reap")
 
 
@@ -75,6 +78,7 @@ class JobQueue:
         self._ack: AsyncScript = redis.register_script(_ACK_SOURCE)
         self._nack: AsyncScript = redis.register_script(_NACK_SOURCE)
         self._renew: AsyncScript = redis.register_script(_RENEW_SOURCE)
+        self._requeue: AsyncScript = redis.register_script(_REQUEUE_SOURCE)
         self._reap: AsyncScript = redis.register_script(_REAP_SOURCE)
 
     @classmethod
@@ -182,6 +186,58 @@ class JobQueue:
             keys=[job_key(job_id), LEASES_KEY],
             args=[job_id, worker_id, settings.visibility_timeout_seconds * 1000],
         )
+
+    async def requeue(self, job_id: str, worker_id: str) -> None:
+        """Cleanly return an in-flight job to the ready queue as ``queued`` (TDD §5.4).
+
+        Used by a worker's graceful shutdown to hand its in-flight job straight back without
+        burning a retry: unlike :meth:`nack` it **does not touch ``attempts``** and skips the
+        retry backoff. Does nothing and returns (no-op) if ``worker_id`` no longer owns the
+        job — the same stale-owner fence as :meth:`ack` / :meth:`nack`.
+        """
+        await self._requeue(
+            keys=[
+                job_key(job_id),
+                processing_key(worker_id),
+                LEASES_KEY,
+                READY_KEY,
+                COUNTS_KEY,
+            ],
+            args=[job_id, worker_id, STATE_CHANNEL],
+        )
+
+    # ---- Worker registry (TDD §5.4; read by the autoscaler, Epic 11) -------------
+
+    async def heartbeat(
+        self, worker_id: str, *, state: str, current_job: str | None = None
+    ) -> None:
+        """Register the worker (first call) and refresh its liveness in ``ql:workers``.
+
+        Writes the worker's ``{state, current_job, last_heartbeat}`` record, stamping
+        ``last_heartbeat`` from Redis ``TIME`` (the one authoritative clock, so the
+        autoscaler's staleness check is free of cross-container clock skew). Each worker is
+        the sole writer of its own field, so a plain timestamp-then-write needs no Lua script.
+        """
+        seconds, microseconds = await self._redis.time()
+        now_ms = (seconds * 1000) + (microseconds // 1000)
+        record = json.dumps(
+            {"state": state, "current_job": current_job, "last_heartbeat": now_ms},
+            separators=(",", ":"),
+        )
+        await self._redis.hset(WORKERS_KEY, worker_id, record)
+
+    async def deregister_worker(self, worker_id: str) -> None:
+        """Remove a worker's registry field, so a cleanly stopped worker disappears at once.
+
+        A hard-killed worker can't call this; its stale field lingers until the autoscaler
+        (Epic 11) reaps it by heartbeat age.
+        """
+        await self._redis.hdel(WORKERS_KEY, worker_id)
+
+    async def list_workers(self) -> dict[str, dict]:
+        """Return the registry as ``{worker_id: {state, current_job, last_heartbeat}}``."""
+        raw = await self._redis.hgetall(WORKERS_KEY)
+        return {worker_id: json.loads(record) for worker_id, record in raw.items()}
 
     # ---- Recovery (used by the reaper loop, Epic 9) ------------------------------
 

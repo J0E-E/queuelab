@@ -71,6 +71,11 @@ class Settings(BaseSettings):
     job_retention_hours: PositiveInt = 24
     scaling_event_retention_hours: PositiveInt = 24
 
+    # ---- Worker liveness / registry (TDD §5.4) ----
+    # How often a worker refreshes its heartbeat in ``ql:workers``. Several times faster than
+    # the visibility timeout so the autoscaler (Epic 11) can spot a dead worker promptly.
+    worker_heartbeat_seconds: PositiveInt = 5
+
     # ---- Worker image the autoscaler launches at runtime ----
     worker_image: str = "queuelab-worker:latest"
 

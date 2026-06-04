@@ -32,6 +32,11 @@ DELAYED_KEY = "ql:queue:delayed"
 LEASES_KEY = "ql:leases"
 COUNTS_KEY = "ql:counts"
 
+# Worker registry (TDD §5.4): a Hash mapping ``worker_id -> JSON {state, current_job,
+# last_heartbeat}``. Each worker is the only writer of its own field; the autoscaler
+# (Epic 11) reads this to count live workers and reap ones whose heartbeat has gone stale.
+WORKERS_KEY = "ql:workers"
+
 # Single pub/sub channel for state-change events. The real-time layer (Epic 10)
 # subscribes here and fans messages out to WebSocket clients; each message is a JSON
 # blob carrying job_id, the new state, session_id, and timing fields.

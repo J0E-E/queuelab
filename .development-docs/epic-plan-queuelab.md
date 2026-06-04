@@ -555,7 +555,7 @@ explicit and acyclic.
       16. The worker image rebuilds from the repo root and the container's vendored `app.config` /
       `app.queue` imports resolve with `derive_worker_id()` returning the container short id.
 
-## Epic 8c — Worker heartbeat, registration & graceful shutdown
+## Epic 8c — Worker heartbeat, registration & graceful shutdown — **COMPLETED**
 - **Intent:** Make the worker a well-behaved citizen — registered and heartbeating in
   `ql:workers` (for the autoscaler/chaos to see), with graceful SIGTERM that cleanly
   returns its in-flight job.
@@ -577,6 +577,91 @@ explicit and acyclic.
   last-attempt job. Hard SIGKILL is intentionally unhandled here; it relies on
   lease-expiry recovery via the Epic 9 reaper. (Rejected reusing `nack`, which burns a
   retry.)
+- **Plan-time decisions (8c):**
+  - **Registry = a single `ql:workers` Hash** (TDD §5.4 — `worker_id → JSON {state,
+    current_job, last_heartbeat}`), via a new `WORKERS_KEY` constant in
+    `app/queue/protocol.py`. Graceful shutdown `HDEL`s its own field; a hard-killed worker
+    leaves a stale field the **autoscaler reaps by heartbeat-age (Epic 11)** — the registry
+    does not self-clean. (User-confirmed; chosen over per-worker TTL'd `ql:worker:{id}`
+    keys, which would self-expire but deviate from the TDD's "Hash" and need `SCAN`.)
+  - **Worker `state` vocabulary = `idle` / `busy` / `stopping`** (user-confirmed) — a
+    worker-liveness vocab distinct from the job-state enum; `stopping` is set during the
+    graceful drain.
+  - **Registration is folded into the first heartbeat** — one `heartbeat(worker_id, *,
+    state, current_job=None)` upsert, no separate `register_worker` method (a deliberate
+    simplification of this epic's "registration + heartbeat" wording). Plus
+    `deregister_worker` (`HDEL`) and `list_workers` (`HGETALL` + JSON-decode, for tests now
+    / the autoscaler later).
+  - **`heartbeat` stamps `last_heartbeat` from Redis `TIME`** (the one authoritative clock,
+    so the autoscaler's heartbeat-age check is skew-free), reusing `enqueue`'s
+    TIME-then-write pattern — **no new Lua script** (worker-field writes are single-writer,
+    so no cross-writer atomicity concern).
+  - **`requeue.lua` reuses the `ack`/`nack`/`renew` ownership fence** (no-op `'stale'` for a
+    superseded worker) and passes `READY_KEY` in `KEYS` (all keys declared; the worker_id is
+    known so `processing_key` is built in Python).
+  - **New config `worker_heartbeat_seconds: PositiveInt = 5`** (+ `.env.example`, one-to-one).
+  - **Graceful shutdown via an injected `stop_event` seam** on `run_worker` (mirrors the
+    existing `max_idle_polls` test seam): the in-flight job runs as a task raced against the
+    event, so SIGTERM cancels the simulated work and `requeue`s promptly. The OS signal is
+    wired **only in `main()`** (`add_signal_handler` for SIGTERM/SIGINT, suppressing
+    `NotImplementedError` on Windows — the worker runs in a Linux container, Windows is
+    dev-only), so tests stay OS-agnostic by driving `stop_event` directly.
+  - **3-phase build:** (1) queue primitives — `requeue.lua`/`requeue` + registry helpers +
+    backend tests; (2) worker registration + periodic heartbeat; (3) graceful SIGTERM
+    requeue. Each phase compiles and is independently reviewable.
+- **As built (8c):**
+  - **Phase 1 — queue surface.** Added `WORKERS_KEY = "ql:workers"` to
+    `app/queue/protocol.py`; `app/queue/scripts/requeue.lua` (ownership-fenced clean requeue,
+    KEYS include `READY_KEY`, never touches `attempts`); and four `JobQueue` methods —
+    `requeue`, `heartbeat` (registration folded in), `deregister_worker`, `list_workers`.
+    `heartbeat` stamps `last_heartbeat` from Redis `TIME` via the existing `enqueue`
+    timestamp-then-write pattern (no Lua). Tests: requeue clean-return, requeue stale no-op,
+    register/refresh/deregister.
+  - **Phase 2 — registration + heartbeat.** Added `worker_heartbeat_seconds: PositiveInt = 5`
+    (config.py + `.env.example`, new "Worker liveness / registry" group). `run_worker` emits
+    an initial heartbeat (registration) and runs a lifetime `_heartbeat_until_cancelled` task
+    (mirrors `_renew_lease_until_cancelled`: best-effort, logs, keeps looping) that reads a
+    small mutable `_WorkerStatus` dataclass holder, deregistering in a `finally` on exit.
+  - **Phase 3 — graceful SIGTERM.** `run_worker` gained a `stop_event` seam; a new private
+    `_run_job_until_done_or_stopped` runs the in-flight job as a task raced (`asyncio.wait`,
+    `FIRST_COMPLETED`) against the stop event, so a stop mid-job cancels the simulated work
+    and `requeue`s the job cleanly. The OS signal is wired **only in `main()`**
+    (`add_signal_handler` for SIGTERM/SIGINT, `NotImplementedError` suppressed on Windows).
+  - **Deviations / notes:**
+    - The worker-test poll helper `_poll_until` uses **PEP 695 inline generics**
+      (`def _poll_until[PollResult](...)`) — ruff `UP047`/`UP049` required it over `TypeVar`
+      on this py312 tree. It replaces fixed sleeps when observing the concurrently-running
+      worker task (registration, claim, heartbeat advance), keeping the tests non-flaky.
+    - **No new dependencies** — `signal` and `dataclasses` are stdlib; `worker/pyproject.toml`
+      and both `uv.lock`s are untouched. `worker.py` was rewritten in full, so its diff churn
+      overstates the logic added (e.g. `run_one_job` is byte-identical).
+    - **Idle-shutdown latency** is bounded by `poll_timeout` (the loop checks `stop_event` at
+      the top of each cycle; an in-flight job is interrupted promptly via the race). Acceptable
+      under Docker's default 10s stop grace; not separately raced to keep the loop simple.
+  - **Review fixes (8c):**
+    - *`stopping` state made observable (approach refinement).* As first built, `run_worker`'s
+      `finally` set `status.state = "stopping"` then cancelled the heartbeat task with no
+      intervening `await`, so `stopping` was never published to `ql:workers` before
+      `deregister_worker` (`HDEL`) removed the record — the user-confirmed `stopping` vocabulary
+      was inert. The `finally` now cancels the periodic heartbeat, publishes **one final
+      best-effort `stopping` heartbeat** (logged on failure, mirroring the periodic task), then
+      deregisters — so a graceful drain is briefly visible to the autoscaler (Epic 11) before the
+      worker disappears. Deviates slightly from the plan's "graceful shutdown `HDEL`s its field":
+      it now writes `stopping` then `HDEL`s.
+    - *Boolean naming.* Renamed the local `requeued` → `was_requeued` in `run_worker` (CLAUDE.md
+      boolean-prefix rule). No behaviour change.
+  - **Verified:** ruff lint + format clean on both trees; backend `pytest` **83 passed**
+    (80 prior + 3 queue), worker `pytest` **7 passed** (5 prior + 2: registration/heartbeat +
+    graceful-shutdown requeue) against an auto-spun real Redis 7 / Postgres 16. The worker
+    image rebuilds from the repo root and the container's vendored `app.queue` (incl.
+    `requeue.lua`) / `app.config` imports resolve.
+  - **Completion gate (8c):** Re-ran the full green gate at completion. ruff `check` +
+    `format --check` clean on both trees. Backend suite **83 passed** (80 prior + 3 queue:
+    requeue clean-return, requeue stale no-op, register/refresh/deregister). Worker **full
+    suite 24 passed** = 17 simulate + 7 `test_worker.py` (the "7 passed" in the Verified
+    bullet above counts only `test_worker.py`; the whole worker suite is 24, matching the
+    8b convention of reporting the full suite). Both ran against an auto-spun real Redis 7 /
+    Postgres 16 via testcontainers.
 
 ## Epic 9 — Reaper (delayed promotion & lease recovery)
 - **Intent:** The chaos-recovery path — promote due delayed jobs and requeue jobs
