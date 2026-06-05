@@ -975,19 +975,54 @@ explicit and acyclic.
     integration, plus the unchanged broadcaster/durable-writer suites confirming the loop
     extraction). Ran against `backend/.venv` (`uv` not on PATH on this machine).
 
-## Epic 11 — Autoscaler (control loop & Docker control)
-- **Intent:** A separate long-lived process that scales worker containers by manual
-  and queue-depth strategies, records scaling events, and replaces unhealthy workers.
-- **Scope:** `backend/app/autoscaler_main.py` entrypoint,
-  `backend/app/services/autoscaler.py` (control loop ~1–2s: manual + queue-depth
-  strategies, guardrail caps, idle scale-down), `backend/app/services/docker_control.py`
-  (Docker SDK over `/var/run/docker.sock`), `ql:control` channel consumer, scaling
-  events to Postgres + feed, config endpoints `GET/PUT /api/config`. Unit tests for
-  scaling policy math; integration test for control-channel commands.
-- **Verification:** Flood queue → autoscaler spawns workers up to cap; idle past
-  `idle_timeout` → scale down to `min_workers`; each step writes a scaling_event +
-  feed line; Pytest for threshold/idle policy decisions.
+## Epic 11a — Scaling policy core (pure decisions)
+- **Goal:** A pure scaling-decision function decides what the autoscaler should do
+  from a snapshot of the queue and workers, with no I/O or side effects.
+- **Rough scope:** `backend/app/services/autoscaler.py` — a `decide_scaling(...)`
+  taking queue depth, the worker registry (state + `last_heartbeat`), the `settings`
+  thresholds, and the current time, returning an action (scale up by N / scale down a
+  named worker / replace an unhealthy worker / no-op) plus a human-readable reason.
+  Covers guardrail caps (`min_workers`/`max_workers`), queue-depth thresholds, idle
+  scale-down, and stale-heartbeat (unhealthy) detection. Pure unit tests only — no
+  Docker, no Redis, no long-lived process.
+- **Open questions / decisions for stakeholders:** none expected.
 - **Depends on:** Epic 10d.
+- **Implementation notes:** _none yet_
+
+## Epic 11b — Docker control
+- **Goal:** A thin Docker wrapper can spawn, list, and kill worker containers over the
+  mounted Docker socket.
+- **Rough scope:** `backend/app/services/docker_control.py` using the Docker SDK
+  (`/var/run/docker.sock`): start a worker from `worker_image` (label it, join the
+  compose network, pass `redis_url`), list the running worker containers by that label,
+  and kill/remove one. Tested with the Docker SDK mocked (or skip-if-no-socket).
+- **Open questions / decisions for stakeholders:** none expected.
+- **Depends on:** Epic 11a.
+- **Implementation notes:** _none yet_
+
+## Epic 11c — Autoscaler process & scaling events
+- **Goal:** A long-lived autoscaler process runs the control loop, scaling workers by
+  queue depth and recording every step.
+- **Rough scope:** `backend/app/autoscaler_main.py` entrypoint (asyncio loop building
+  `JobQueue`, `Database`, and the Docker control); the ~1–2s control loop tying the
+  policy (11a) to the Docker control (11b), reading depth/workers, applying the caps
+  and idle scale-down, and writing a `scaling_event` row to Postgres plus a feed line
+  per step; the real `command` for the `autoscaler` compose service. Integration test:
+  flood the queue → scale up to cap; idle past `idle_timeout` → scale down to
+  `min_workers`.
+- **Open questions / decisions for stakeholders:** none expected.
+- **Depends on:** Epic 11b.
+- **Implementation notes:** _none yet_
+
+## Epic 11d — Manual control channel & config API
+- **Goal:** Operators can drive scaling manually and adjust the autoscaler thresholds
+  at runtime.
+- **Rough scope:** a `ql:control` channel consumer folded into the control loop
+  (manual scale commands) and `GET/PUT /api/config` endpoints that read and update the
+  live autoscaler thresholds. Integration test for the control-channel commands.
+- **Open questions / decisions for stakeholders:** none expected.
+- **Depends on:** Epic 11c.
+- **Implementation notes:** _none yet_
 
 ## Epic 12 — Chaos endpoints
 - **Intent:** Destroy-worker and inject-failures, wired through the autoscaler and
@@ -1000,7 +1035,7 @@ explicit and acyclic.
 - **Verification:** `POST /api/chaos/destroy-worker` → container killed, lease lapses,
   reaper requeues job, autoscaler may replace; inject-failures biases outcomes toward
   `failed`; rate limit returns 429.
-- **Depends on:** Epic 11.
+- **Depends on:** Epic 11d.
 
 ## Epic 13 — Frontend foundation & style-guide primitives
 - **Intent:** The Terminal CLI frontend shell with design tokens and the primitive
