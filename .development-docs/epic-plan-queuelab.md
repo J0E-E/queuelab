@@ -975,7 +975,7 @@ explicit and acyclic.
     integration, plus the unchanged broadcaster/durable-writer suites confirming the loop
     extraction). Ran against `backend/.venv` (`uv` not on PATH on this machine).
 
-## Epic 11a — Scaling policy core (pure decisions)
+## Epic 11a — Scaling policy core (pure decisions) — **COMPLETED**
 - **Goal:** A pure scaling-decision function decides what the autoscaler should do
   from a snapshot of the queue and workers, with no I/O or side effects.
 - **Rough scope:** `backend/app/services/autoscaler.py` — a `decide_scaling(...)`
@@ -987,7 +987,47 @@ explicit and acyclic.
   Docker, no Redis, no long-lived process.
 - **Open questions / decisions for stakeholders:** none expected.
 - **Depends on:** Epic 10d.
-- **Implementation notes:** _none yet_
+- **Implementation notes:**
+  - **Signature (snapshot in, one decision out).** `decide_scaling(*, queue_depth,
+    workers, queue_idle_seconds, settings, now_ms)` returns a frozen `ScalingDecision`
+    dataclass `{action, reason, count, worker_id}`. `action` is one of
+    `"scale_up" | "scale_down" | "replace" | "no-op"` — aligned with the `ScalingEvent`
+    vocabulary so Epic 11c records it directly (`"no-op"` is never written as a row).
+    `workers` is the `JobQueue.list_workers()` shape
+    `{worker_id: {state, current_job, last_heartbeat(ms)}}`.
+  - **Stale heartbeat (settled with stakeholder).** A new named setting
+    `worker_unhealthy_after_seconds` (default 15) is added to `config.py` — matching the
+    codebase's explicit named-threshold style rather than deriving a factor in code. A
+    worker is unhealthy when `now_ms − last_heartbeat > worker_unhealthy_after_seconds × 1000`.
+  - **Scale-up is proportional (settled).** When `queue_depth > scale_up_threshold`,
+    `desired = ceil(queue_depth / scale_up_threshold)`, target `min(desired, max_workers)`,
+    `count = target − worker_count`. Capped by `max_workers`.
+  - **Precedence Health → up → down (settled).** One action per call: replace an unhealthy
+    worker first, then scale up for load, then idle scale-down, else no-op.
+  - **Idle measure (settled).** The registry can't measure idle duration on its own
+    (`last_heartbeat` refreshes every ~5s regardless of state), so `decide_scaling` takes a
+    `queue_idle_seconds` input (the 11c loop tracks time at/below `scale_down_threshold`) and
+    compares it to `idle_timeout_seconds`. Scale-down also requires `worker_count > min_workers`
+    and an `"idle"` worker, naming a deterministic one (first by sorted id).
+  - **Phasing.** Phase 1 — module + `ScalingDecision` + proportional scale-up + no-op (full
+    signature; `queue_idle_seconds`/`now_ms` unused yet) + pure tests. Phase 2 — idle
+    scale-down (named worker, `min_workers` floor, up-over-down precedence) + tests. Phase 3 —
+    `worker_unhealthy_after_seconds` setting + replace branch + full precedence + tests.
+  - **Size.** ~3 non-generated files (2 new: `services/autoscaler.py`, `tests/test_autoscaler.py`;
+    1 edited: `config.py`) plus this doc — within the review budget. Pure unit tests only.
+  - **No deviations from the approved plan.** Implemented exactly as planned across the three
+    phases; staleness boundary is *exclusive* (a heartbeat exactly at `worker_unhealthy_after_seconds`
+    is still healthy, one ms past it is unhealthy). The `replace` branch picks the *stalest*
+    worker (oldest heartbeat, ties broken on lower id) for a stable, deterministic choice.
+  - **Review fix (replace reason).** The `replace` reason now reports raw milliseconds on both
+    sides (`stale {stale_ms}ms > limit {limit_ms}ms`) instead of truncating with `// 1000`, so at
+    the exclusive boundary it can't read a misleading `15s > 15s`. Decision logic unchanged.
+  - **Deferred (no-op reason granularity).** The `no-op` reason is a single generic string even when
+    the real cause is the `max_workers` cap (queue over threshold but capped). Left as-is for now; a
+    cap-specific reason can be added with the 11c audit/log work if the distinction proves useful.
+  - **Verified.** ruff `check` + `format --check` clean on the changed files; `pytest`
+    **127 passed** (110 prior + 17 new autoscaler unit tests) against an auto-spun real Redis 7 /
+    Postgres 16 via testcontainers. Ran against `backend/.venv` (`uv` not on PATH on this machine).
 
 ## Epic 11b — Docker control
 - **Goal:** A thin Docker wrapper can spawn, list, and kill worker containers over the

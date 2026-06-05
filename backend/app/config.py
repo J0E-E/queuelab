@@ -93,6 +93,10 @@ class Settings(BaseSettings):
     # How often a worker refreshes its heartbeat in ``ql:workers``. Several times faster than
     # the visibility timeout so the autoscaler (Epic 11) can spot a dead worker promptly.
     worker_heartbeat_seconds: PositiveInt = 5
+    # How stale a worker's last heartbeat may get before the autoscaler treats it as unhealthy
+    # and replaces it (Epic 11a). A few heartbeat intervals, so a single missed refresh doesn't
+    # condemn a healthy worker.
+    worker_unhealthy_after_seconds: PositiveInt = 15
 
     # ---- Worker image the autoscaler launches at runtime ----
     worker_image: str = "queuelab-worker:latest"
