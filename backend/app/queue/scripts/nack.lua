@@ -61,11 +61,21 @@ end
 -- end RETRY-DECISION ---------------------------------------------------------------
 
 local session_id = redis.call('HGET', job_key, 'session_id')
-redis.call('PUBLISH', channel, cjson.encode({
+-- The durable-writer (Epic 10a) records these onto the Postgres row. last_error rides every
+-- failure; a terminal `failed` also carries the run timing (started_at + finished_at) so the
+-- writer can store the finish time and duration. A `retrying` job will run again, so it has no
+-- finish time yet — cjson omits the nil fields.
+local event = {
   job_id = job_id,
   state = state,
   session_id = session_id,
   attempts = attempts,
-}))
+  last_error = error_msg,
+}
+if state == 'failed' then
+  event.started_at = tonumber(redis.call('HGET', job_key, 'started_at'))
+  event.finished_at = now_ms
+end
+redis.call('PUBLISH', channel, cjson.encode(event))
 
 return state

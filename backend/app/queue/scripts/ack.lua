@@ -43,10 +43,15 @@ redis.call('EXPIRE', job_key, ttl_seconds)
 
 local session_id = redis.call('HGET', job_key, 'session_id')
 local started_at = tonumber(redis.call('HGET', job_key, 'started_at'))
+-- Carry worker_id (the owner the fence above matched) on the completed event too, so the
+-- durable-writer (Epic 10a) records who ran the job even if it never saw the `running` event
+-- — e.g. a writer that started after the claim. We HDEL it from the hash above, but the local
+-- still holds it.
 redis.call('PUBLISH', channel, cjson.encode({
   job_id = job_id,
   state = 'completed',
   session_id = session_id,
+  worker_id = worker_id,
   started_at = started_at,
   completed_at = now_ms,
 }))

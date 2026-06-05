@@ -49,6 +49,19 @@ def test_lifespan_runs_and_cancels_the_reaper():
     assert reaper_task.cancelled()
 
 
+def test_lifespan_runs_and_cancels_the_durable_writer():
+    """The lifespan starts the durable-writer task on boot and cancels it cleanly on shutdown.
+
+    With no reachable Redis here, the writer's first subscribe fails and it re-subscribes on a
+    pause loop, so the task is always mid-flight (never finished) when shutdown cancels it —
+    exercising only its start/cancel lifecycle, no container needed.
+    """
+    with TestClient(app):
+        durable_writer_task = app.state.durable_writer_task
+        assert not durable_writer_task.done()
+    assert durable_writer_task.cancelled()
+
+
 def test_create_session_returns_a_valid_identity():
     """``POST /api/session`` returns ``{session_id, guest_handle, color}`` in valid shape."""
     app.dependency_overrides[get_session_store] = lambda: _NoopSessionStore()

@@ -26,6 +26,7 @@ from app.config import settings
 from app.db.engine import Database
 from app.dependencies import get_database, get_queue, get_rate_limiter, get_session_store
 from app.queue.client import JobQueue
+from app.realtime.durable_writer import run_durable_writer
 from app.reaper import run_reaper
 from app.routers import jobs, session
 from app.services.guardrails import register_guardrail_handlers
@@ -50,14 +51,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         run_reaper(app.state.queue, interval_seconds=settings.reaper_loop_seconds)
     )
     app.state.reaper_task = reaper_task
+    # The durable-writer subscribes to state-change events and copies each job's outcome onto
+    # its durable Postgres row, so completed/failed history survives the Redis hot record's 1h
+    # TTL (Epic 10a). Like the reaper it runs for the life of the process and is cancelled on
+    # shutdown.
+    durable_writer_task = asyncio.create_task(
+        run_durable_writer(app.state.queue, app.state.database)
+    )
+    app.state.durable_writer_task = durable_writer_task
     try:
         yield
     finally:
-        # Stop the reaper before closing the clients, so an in-flight sweep never hits a
-        # closed Redis client.
+        # Stop the background tasks before closing the clients, so an in-flight sweep or
+        # durable write never hits a closed Redis/Postgres client.
         reaper_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await reaper_task
+        durable_writer_task.cancel()
+        for background_task in (reaper_task, durable_writer_task):
+            with suppress(asyncio.CancelledError):
+                await background_task
         # Close every client independently. Running them together (gather) and keeping
         # any error instead of raising (return_exceptions=True) means a failure closing
         # one client can't skip closing the others and leak their connection pools.

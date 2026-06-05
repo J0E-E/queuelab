@@ -16,6 +16,7 @@ import json
 from pathlib import Path
 
 from redis.asyncio import Redis
+from redis.asyncio.client import PubSub
 from redis.commands.core import AsyncScript
 
 from app.config import settings
@@ -90,6 +91,16 @@ class JobQueue:
     async def aclose(self) -> None:
         """Close the underlying Redis connection pool."""
         await self._redis.aclose()
+
+    def pubsub(self) -> PubSub:
+        """Return a fresh pub/sub handle on the shared Redis connection pool.
+
+        The durable-writer (Epic 10a) and the real-time broadcaster (Epic 10b) subscribe to
+        the state-change channel through this, reusing the queue's connection pool rather than
+        opening a second Redis client. Each handle checks out its own dedicated connection, so
+        a subscription never contends with the queue's regular command traffic.
+        """
+        return self._redis.pubsub()
 
     # ---- Producer side -----------------------------------------------------------
 

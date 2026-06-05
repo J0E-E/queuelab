@@ -83,13 +83,21 @@ for _, id in ipairs(expired) do
   end
   -- end RETRY-DECISION -----------------------------------------------------------
 
+  -- Same enriched payload as nack.lua so the durable-writer (Epic 10a) records the failure
+  -- reason and, for a terminal `failed`, the run timing. cjson omits the nil fields.
   local session_id = redis.call('HGET', jkey, 'session_id')
-  redis.call('PUBLISH', channel, cjson.encode({
+  local event = {
     job_id = id,
     state = state,
     session_id = session_id,
     attempts = attempts,
-  }))
+    last_error = 'lease expired',
+  }
+  if state == 'failed' then
+    event.started_at = tonumber(redis.call('HGET', jkey, 'started_at'))
+    event.finished_at = now_ms
+  end
+  redis.call('PUBLISH', channel, cjson.encode(event))
   recovered = recovered + 1
 end
 

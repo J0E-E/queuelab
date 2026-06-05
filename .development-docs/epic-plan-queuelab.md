@@ -719,19 +719,101 @@ explicit and acyclic.
   (`test_reaper.py`, 157 lines) — production code is ~68 lines for the single reaper-loop
   concern, so kept whole (human-acknowledged at completion).
 
-## Epic 10 — Durable-writer & real-time broadcaster
-- **Intent:** Decouple producers from the socket: persist final outcomes and fan
-  state changes out to WebSocket clients.
-- **Scope:** `backend/app/realtime/broadcaster.py` (Redis pub/sub → WS fan-out),
-  `backend/app/realtime/ws.py` (connection manager, snapshot-on-connect), `WS /ws`
-  endpoint, durable-writer subscriber (state-change events → Postgres outcome
-  updates), throttled metrics tick, `GET /api/metrics`,
-  `backend/app/services/metrics.py`, `backend/app/services/activity_feed.py`.
-  Integration tests for snapshot + delta protocol and durable-writer persistence.
-- **Verification:** Connect to `/ws` → receive snapshot then deltas as a batch runs;
-  metrics snapshot matches counts; completed jobs get durable `finished_at`/duration
-  in Postgres; Pytest covers fan-out and snapshot-on-connect.
+## Epic 10a — Durable-writer (state events → Postgres outcomes) — **COMPLETED**
+- **Goal:** Final job outcomes survive Redis expiry. A background subscriber on the
+  `ql:events:state` channel writes the timing/outcome fields (`started_at`, `worker_id`,
+  `finished_at`, `duration_ms`, `last_error`, `state`) onto the durable Postgres job rows,
+  so completed/failed jobs keep accurate history after the 1-hour Redis TTL lapses.
+- **Rough scope:** A new durable-writer subscriber in `backend/app/realtime/` that follows
+  the reaper's lifespan-task pattern, maps each state-change event to a Postgres `Job`
+  update, and is wired into the app lifespan. Integration test drives a batch through
+  claim → ack and asserts the durable row gains `finished_at` and `duration_ms`.
+- **Open questions / decisions for stakeholders:** Idempotency / out-of-order events — set
+  `started_at` once and compute `duration_ms` from the event epochs; whether `retrying` /
+  `failed` events also update `state`/`attempts`/`last_error` (recommend yes — persist every
+  state on the row). Settle at epic time.
 - **Depends on:** Epic 9.
+- **Implementation notes:**
+  - **Stakeholder decision — enrich the Lua scripts.** No event carried `last_error`, and
+    `failed`/`retrying` events carried no finish timestamp (only the `completed` ack event had
+    both epochs). Chose to enrich `nack.lua` + `reap.lua` (over deferring or an HGETALL-from-hash)
+    so failed rows get authoritative, complete history: the terminal `failed` branch now publishes
+    `started_at` + `finished_at` (= `now_ms`) + `last_error`; the `retrying` branch publishes
+    `last_error`. `cjson` omits nil fields, so one publish per branch covers both. Verified no
+    existing test pins the event payloads, so the enrichment was safe.
+  - **`backend/app/realtime/durable_writer.py` = one module function** (`run_durable_writer`) plus
+    a per-message handler and an idempotent `_persist_event` mapper. It mirrors the reaper's
+    best-effort/cancel-on-shutdown posture but is a **pub/sub listen loop**, not a sleep-first tick.
+  - **Deviation — added an outer re-subscribe loop.** Beyond the plan's single subscribe/listen, a
+    dropped subscription (transient Redis blip) is logged and re-subscribed after
+    `RESUBSCRIBE_DELAY_SECONDS` (1s). This gives the writer the reaper's "survive a failure and
+    carry on" property, and keeps the container-free lifespan smoke non-flaky (the task is always
+    mid-flight — never dead — when shutdown cancels it). A bad single message is still logged and
+    skipped separately.
+  - **`JobQueue.pubsub()` accessor** added so the writer (and Epic 10b's broadcaster) reuse the
+    queue's Redis pool instead of a second client. **No new config value** — a pub/sub loop has no
+    tick interval.
+  - **Mapping:** `_persist_event` applies a field-by-field partial update keyed on which fields the
+    event carries (`state` always; `worker_id`/`started_at`/`attempts`/`last_error`/finish-epoch as
+    present). `duration_ms` is computed from the event's own epoch pair (finish − start), so it is
+    idempotent and order-independent; a missing durable row is logged + skipped. Redis epoch-ms →
+    tz-aware `datetime` via `datetime.fromtimestamp(ms/1000, tz=UTC)`.
+  - **Verified:** ruff `check` + `format --check` clean (42 files); backend `pytest` **91 passed**
+    (88 prior + 2 durable-writer integration + 1 lifespan smoke) against an auto-spun real Redis 7 /
+    Postgres 16 via testcontainers. Ran against `backend/.venv` (`uv` not on PATH on this machine).
+  - **Size:** ~290 changed lines / 7 non-generated files / 2 phases — over the ~150 rule of thumb,
+    but one cohesive behavior; ~116 lines are integration tests and ~60 of `durable_writer.py`'s 105
+    lines are the repo's mandated explanatory docstrings/comments. Kept whole (Epic 9 precedent).
+  - **Review fix — `ack.lua` also carries `worker_id`.** The `completed` event omitted `worker_id`
+    (the script `HDEL`s it before publishing), so the durable row's `worker_id` rode only on the
+    earlier `running` event — a writer that started/restarted after the claim would lose it (pub/sub
+    has no replay). Now the `completed` event re-publishes the owning `worker_id` (the local the
+    ownership fence already matched), so the outcome is self-contained. No writer change — the
+    field-by-field mapper already persists `worker_id` when present.
+  - **Review fix — `state` ordering caveat.** Clarified in `_persist_event`'s docstring that, unlike
+    `duration_ms` (computed from the event's own epochs, truly order-independent), `state` is
+    last-write-wins and stays correct only because every event for a job arrives in publish order on
+    the single `ql:events:state` channel.
+  - **Deferred (review nit, by stakeholder call) — per-event DB session.** `_persist_event` opens one
+    session/transaction per message. Acceptable at lab scale; revisit with batching/session reuse
+    only if event volume makes per-message commits a bottleneck.
+  - **Completion gate (10a):** Re-ran the full green gate at completion — ruff `check` +
+    `format --check` clean (42 files), backend `pytest` **91 passed** against an auto-spun real
+    Redis 7 / Postgres 16, matching the Verified count. Final diff is ~344 added lines / 8 non-doc
+    files — the original Size note (~290 / 7) predates the `ack.lua` review fix, which added the
+    eighth file. Overage is the two integration-test files (~161 lines) plus the module's mandated
+    docstrings; production is ~183 lines for one cohesive subscriber concern, kept whole
+    (human-acknowledged at completion, Epic 9 precedent).
+
+## Epic 10b — Real-time broadcaster & `WS /ws` (snapshot + deltas)
+- **Goal:** A browser connects to `WS /ws`, immediately receives a snapshot of current
+  queue state, then receives per-job state-change deltas in real time as a batch runs.
+- **Rough scope:** A connection manager (track clients, snapshot-on-connect from queue
+  counts/state) and a broadcaster (subscribe to `ql:events:state`, fan messages out to every
+  connected client) in `backend/app/realtime/`; the `WS /ws` endpoint; broadcaster started
+  and stopped in the lifespan. Integration test connects, asserts the snapshot frame, then
+  asserts deltas arrive as a batch is claimed/acked.
+- **Open questions / decisions for stakeholders:** Message envelope
+  (`{type: "snapshot" | "delta", …}`) and snapshot payload shape; broadcast-all vs
+  per-session filtering — this is a multiplayer view, so recommend broadcast-all. Settle at
+  epic time.
+- **Depends on:** Epic 10a.
+- **Implementation notes:** _none yet_
+
+## Epic 10c — Metrics & activity feed
+- **Goal:** The dashboard gets aggregate vitals and a human-readable activity feed: a
+  `GET /api/metrics` snapshot, a throttled metrics tick pushed over `/ws`, and an
+  activity-feed stream of recent state changes.
+- **Rough scope:** `backend/app/services/metrics.py` (compute metrics from queue counts /
+  derived state), the `GET /api/metrics` endpoint, a throttled metrics tick broadcast over the
+  `/ws` channel, and `backend/app/services/activity_feed.py` (recent state-change lines fanned
+  out over `/ws`). Tests cover the metrics snapshot matching counts and the throttled tick /
+  feed fan-out.
+- **Open questions / decisions for stakeholders:** Tick interval / throttle source (reuse a
+  settings value); feed retention (in-memory ring buffer vs Redis-backed, and length). Settle
+  at epic time.
+- **Depends on:** Epic 10b.
+- **Implementation notes:** _none yet_
 
 ## Epic 11 — Autoscaler (control loop & Docker control)
 - **Intent:** A separate long-lived process that scales worker containers by manual
@@ -745,7 +827,7 @@ explicit and acyclic.
 - **Verification:** Flood queue → autoscaler spawns workers up to cap; idle past
   `idle_timeout` → scale down to `min_workers`; each step writes a scaling_event +
   feed line; Pytest for threshold/idle policy decisions.
-- **Depends on:** Epic 10.
+- **Depends on:** Epic 10c.
 
 ## Epic 12 — Chaos endpoints
 - **Intent:** Destroy-worker and inject-failures, wired through the autoscaler and
