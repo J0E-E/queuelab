@@ -908,7 +908,7 @@ explicit and acyclic.
     the two integration tests plus the module's mandated docstrings for one cohesive concern, kept
     whole (human-acknowledged at completion, Epic 10a/10b precedent).
 
-## Epic 10d — Activity feed
+## Epic 10d — Activity feed — **COMPLETED**
 - **Goal:** The dashboard gets a human-readable activity feed: recent job state-changes
   rendered as one-line entries and fanned out over `/ws`, with a freshly-connected client
   seeded with the recent history.
@@ -923,7 +923,57 @@ explicit and acyclic.
   (recommended, matching the durable-writer/broadcaster pattern) or hooks the existing
   broadcaster.
 - **Depends on:** Epic 10c.
-- **Implementation notes:** _none yet_
+- **Implementation notes:**
+  - **Dedicated subscriber** (settled with stakeholder). The fan-out rides a new
+    `backend/app/realtime/activity.py` subscribed to `ql:events:state` — the read-many twin of the
+    broadcaster/durable-writer — rather than hooking the existing broadcaster. One subscriber per
+    concern, matching the established pattern. (Post-review: the subscribe/re-subscribe/close loop
+    itself, previously copied into all three subscribers, was extracted to a shared
+    `backend/app/realtime/subscriber.py::run_state_subscriber`; each subscriber is now just its own
+    per-message handler — see the post-review note below.)
+  - **Seed folds into the snapshot** (settled with stakeholder). The connect-time `snapshot`
+    frame gains an `"activity": [recent lines]` key; live updates are a separate
+    `{"type": "activity", "line": …}` frame. This mirrors how the snapshot already seeds counts +
+    jobs, so a late-joiner gets recent history in the one opening frame (no second seed frame, no
+    dual-shape `activity` type).
+  - **Lines format the *event*, not the hash.** The public state event on `ql:events:state`
+    carries only `job_id`/`state`/`session_id`/`worker_id`/`started_at`(/`completed_at`/
+    `finished_at`/`attempts`/`last_error`) — **not** the job's `type`/`complexity` (those live in
+    the Redis hash, which the delta path never re-reads). So a line keys on `job_id` + `worker_id`
+    + `state`, exactly the fields the broadcaster sees. `session_id` is never used in a line.
+  - **Ring buffer.** `ActivityFeed` wraps `collections.deque(maxlen=…)`; length comes from a new
+    `activity_feed_max_lines` setting (default 50). Ephemeral by design — Postgres remains the
+    durable record (Epic 10a).
+  - **Phasing.** Phase 1 — `services/activity_feed.py` (`format_activity_line` + `ActivityFeed`) +
+    pure unit test. Phase 2 — `realtime/activity.py` subscriber + setting + lifespan wiring +
+    fan-out integration test. Phase 3 — fold recent lines into the snapshot via `ConnectionManager`
+    (optional `feed` arg) + conftest fixture + connect-time seeding test.
+  - **Subscriber `_handle_message` records before broadcasting.** The line is appended to the ring
+    buffer *before* it is fanned out, so the buffer always reflects what has been sent live — a
+    client is never handed a live line that is missing from the history it was seeded with. One
+    residual window remains (inherent to the Epic 10b connection manager, and shared by `delta`
+    frames): the snapshot is built and sent *before* the socket joins the broadcast set, so a line
+    published in that brief window reaches neither that client's snapshot nor its live stream.
+    Accepted for an ephemeral feed — Postgres remains the durable record.
+  - **Size.** ~9 non-generated backend files (5 new — incl. the post-review `realtime/subscriber.py`
+    — + 4 edited; the plan doc is the extra edited file) — over the ~150-line rule of thumb but at
+    the file budget and **one cohesive concern** (real-time fan-out of one event stream as readable
+    lines + connect-time seeding). Roughly half the change is the unit + integration tests and
+    conftest fixture, and much of the rest is the repo's mandated module/function docstrings. Kept
+    whole — within the human-approved Epic 10a/10b/10c precedent; splitting would ship an incomplete
+    feed.
+  - **Post-review fixes (Epic 10d review).** Four review nits applied: (1) the duplicated
+    subscribe/re-subscribe/close loop was extracted to `realtime/subscriber.py::run_state_subscriber`
+    and the broadcaster, durable-writer, and activity subscribers now pass a `functools.partial`
+    handler to it (shrinks each `run_*` to a single call; the only behavioural change is the log
+    label is now passed as `name=`); (2) the "records before broadcasting" note above was reworded
+    to drop the overstated "no gap" and name the residual connect-window race; (3) a
+    `test_handle_message_skips_a_malformed_event` unit test now covers the best-effort skip path;
+    (4) the unknown-state fallback now renders `"<job> → unknown"` instead of a literal `None`.
+  - **Verified.** ruff `check` + `format --check` clean; backend `pytest` green against an
+    auto-spun real Redis 7 / Postgres 16 via testcontainers (15 activity tests: 13 unit + 2
+    integration, plus the unchanged broadcaster/durable-writer suites confirming the loop
+    extraction). Ran against `backend/.venv` (`uv` not on PATH on this machine).
 
 ## Epic 11 — Autoscaler (control loop & Docker control)
 - **Intent:** A separate long-lived process that scales worker containers by manual

@@ -5,7 +5,9 @@ dashboard. This loop subscribes to that channel and, for each published state ch
 as a ``delta`` frame and hands it to the :class:`ConnectionManager`, which sends it to every
 connected browser. It is the read-many twin of the durable-writer's write-one subscriber and
 shares its shape exactly: one background task, best-effort, cancelled on shutdown, with a
-re-subscribe-after-a-pause guard so a transient Redis blip never permanently stops the feed.
+re-subscribe-after-a-pause guard so a transient Redis blip never permanently stops the feed. That
+shared subscribe loop lives in :func:`app.realtime.subscriber.run_state_subscriber`; this module
+supplies only the per-message handler.
 
 Each forwarded event drops ``session_id`` first — that id is the rate-limit key the REST layer
 never returns, and this view is broadcast to everyone.
@@ -13,52 +15,29 @@ never returns, and this view is broadcast to everyone.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-from contextlib import suppress
+from functools import partial
 from typing import Any
 
 from app.queue.client import JobQueue
 from app.queue.protocol import STATE_CHANNEL
 from app.realtime.connection_manager import ConnectionManager
+from app.realtime.subscriber import run_state_subscriber
 
 logger = logging.getLogger(__name__)
-
-# How long to wait before re-subscribing after the subscription drops, matching the
-# durable-writer so a transient Redis outage retries calmly instead of spinning.
-RESUBSCRIBE_DELAY_SECONDS = 1.0
 
 
 async def run_broadcaster(queue: JobQueue, manager: ConnectionManager) -> None:
     """Subscribe to state-change events and fan each out to every connected WS client.
 
-    Runs until the task is cancelled (the api lifespan cancels it on shutdown). If the
-    subscription drops it logs and re-subscribes after :data:`RESUBSCRIBE_DELAY_SECONDS`;
-    forwarding a single event is itself best-effort (see :func:`_forward_message`).
+    Runs until the task is cancelled (the api lifespan cancels it on shutdown). The subscribe loop
+    and its re-subscribe-after-a-pause guard live in :func:`run_state_subscriber`; forwarding a
+    single event is itself best-effort (see :func:`_forward_message`).
     """
-    while True:
-        pubsub = queue.pubsub()
-        try:
-            await pubsub.subscribe(STATE_CHANNEL)
-            async for message in pubsub.listen():
-                # listen() also yields the subscribe-confirmation frame; act only on messages.
-                if message.get("type") != "message":
-                    continue
-                await _forward_message(manager, message)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception(
-                "broadcaster: subscription dropped; re-subscribing in %ss",
-                RESUBSCRIBE_DELAY_SECONDS,
-            )
-            await asyncio.sleep(RESUBSCRIBE_DELAY_SECONDS)
-        finally:
-            # Return the connection to the pool; best-effort so a closing error never masks the
-            # cancellation (or the drop) that unwound us here.
-            with suppress(Exception):
-                await pubsub.aclose()
+    await run_state_subscriber(
+        queue, STATE_CHANNEL, partial(_forward_message, manager), name="broadcaster"
+    )
 
 
 async def _forward_message(manager: ConnectionManager, message: dict[str, Any]) -> None:

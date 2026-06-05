@@ -8,7 +8,8 @@ queue state without waiting for the next change. The broadcaster (Epic 10b, phas
 
 Two envelope types travel over the socket, both ``{"type": …}``:
 
-- ``snapshot`` — sent once on connect: the live counts plus the in-flight jobs.
+- ``snapshot`` — sent once on connect: the live counts, the in-flight jobs, and the recent
+  activity lines (Epic 10d) so a late-joiner sees recent history without waiting.
 - ``delta``    — sent per state change by the broadcaster.
 
 The per-job projection deliberately drops ``session_id``. That id is the rate-limit key and
@@ -25,6 +26,7 @@ from fastapi import WebSocket
 
 from app.queue.client import JobQueue
 from app.queue.protocol import JobRecord
+from app.services.activity_feed import ActivityFeed
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +34,12 @@ logger = logging.getLogger(__name__)
 class ConnectionManager:
     """Track connected WebSocket clients and send them snapshot/delta frames."""
 
-    def __init__(self, queue: JobQueue) -> None:
+    def __init__(self, queue: JobQueue, feed: ActivityFeed | None = None) -> None:
         self._queue = queue
+        # The shared activity ring buffer the snapshot seeds each new client from. Defaulting to a
+        # fresh empty feed keeps callers that don't care about activity (and older tests) working;
+        # the app passes the same instance the activity subscriber fills (Epic 10d).
+        self._feed = feed or ActivityFeed()
         self._connections: set[WebSocket] = set()
 
     async def connect(self, websocket: WebSocket) -> None:
@@ -67,13 +73,19 @@ class ConnectionManager:
                 self._connections.discard(websocket)
 
     async def _build_snapshot(self) -> dict[str, Any]:
-        """Build the snapshot frame: the live counts plus every in-flight job (public fields)."""
+        """Build the snapshot frame: the live counts, every in-flight job, and recent activity.
+
+        The recent activity lines ride the same opening frame as the counts and jobs (Epic 10d),
+        so a freshly-connected client is seeded with recent history in one message rather than a
+        separate seed frame.
+        """
         counts = await self._queue.counts()
         records = await self._queue.active_jobs()
         return {
             "type": "snapshot",
             "counts": counts,
             "jobs": [_project_job(record) for record in records],
+            "activity": self._feed.recent(),
         }
 
 

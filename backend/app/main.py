@@ -26,12 +26,14 @@ from app.config import settings
 from app.db.engine import Database
 from app.dependencies import get_database, get_queue, get_rate_limiter, get_session_store
 from app.queue.client import JobQueue
+from app.realtime.activity import run_activity_feed
 from app.realtime.broadcaster import run_broadcaster
 from app.realtime.connection_manager import ConnectionManager
 from app.realtime.durable_writer import run_durable_writer
 from app.realtime.metrics_tick import run_metrics_tick
 from app.reaper import run_reaper
 from app.routers import jobs, metrics, realtime, session
+from app.services.activity_feed import ActivityFeed
 from app.services.guardrails import register_guardrail_handlers
 from app.services.rate_limit import RateLimiter
 from app.services.session_store import SessionStore
@@ -48,10 +50,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.database = Database.from_settings()
     app.state.rate_limiter = RateLimiter.from_settings()
     app.state.session_store = SessionStore.from_settings()
+    # The activity feed is the in-memory ring buffer of recent human-readable lines (Epic 10d).
+    # The activity subscriber below fills it; the connection manager reads it to seed a freshly
+    # connected client with recent history (folded into the snapshot frame).
+    app.state.activity_feed = ActivityFeed(max_lines=settings.activity_feed_max_lines)
     # The connection manager tracks every open WS /ws client and seeds each with a snapshot on
-    # connect (Epic 10b). It holds no background task of its own; the broadcaster below pushes
-    # deltas through it for the life of the process.
-    app.state.connection_manager = ConnectionManager(app.state.queue)
+    # connect (Epic 10b) — now including the recent activity lines (Epic 10d). It holds no
+    # background task of its own; the broadcaster below pushes deltas through it for the life of
+    # the process.
+    app.state.connection_manager = ConnectionManager(app.state.queue, app.state.activity_feed)
     # The reaper sweeps Redis on a tick to promote due delayed jobs and requeue expired
     # leases (Epic 9). It runs for the life of the process and is cancelled on shutdown.
     reaper_task = asyncio.create_task(
@@ -73,6 +80,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         run_broadcaster(app.state.queue, app.state.connection_manager)
     )
     app.state.broadcaster_task = broadcaster_task
+    # The activity subscriber is the broadcaster's readable twin: it subscribes to the same
+    # state-change channel, formats each event into a one-line summary, records it in the ring
+    # buffer, and fans it out as an ``activity`` frame (Epic 10d). Like the others it runs for the
+    # life of the process and is cancelled on shutdown.
+    activity_feed_task = asyncio.create_task(
+        run_activity_feed(app.state.queue, app.state.connection_manager, app.state.activity_feed)
+    )
+    app.state.activity_feed_task = activity_feed_task
     # The metrics tick pushes the queue's aggregate vitals (counts + queue depth + worker count)
     # to every connected WS /ws client every ``metrics_tick_seconds`` (Epic 10c), so the
     # dashboard's vitals stay live without re-polling GET /api/metrics. Like the others it runs
@@ -89,15 +104,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         # Stop the background tasks before closing the clients, so an in-flight sweep, durable
-        # write, broadcast, or metrics tick never hits a closed Redis/Postgres client.
+        # write, broadcast, activity line, or metrics tick never hits a closed Redis/Postgres
+        # client.
         reaper_task.cancel()
         durable_writer_task.cancel()
         broadcaster_task.cancel()
+        activity_feed_task.cancel()
         metrics_tick_task.cancel()
         for background_task in (
             reaper_task,
             durable_writer_task,
             broadcaster_task,
+            activity_feed_task,
             metrics_tick_task,
         ):
             with suppress(asyncio.CancelledError):

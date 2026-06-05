@@ -28,6 +28,7 @@ from app.main import app
 from app.queue.client import JobQueue
 from app.queue.protocol import JobRecord
 from app.realtime.connection_manager import ConnectionManager
+from app.services.activity_feed import ActivityFeed
 from app.services.rate_limit import RateLimiter
 from app.services.session_store import SessionStore
 from httpx import ASGITransport, AsyncClient
@@ -142,15 +143,26 @@ async def api_client(queue, database, rate_limiter, session_store):
     app.dependency_overrides.clear()
 
 
+@pytest.fixture
+def activity_feed():
+    """A small, shared activity ring buffer for the connection manager and activity subscriber.
+
+    A test can record lines into this and then assert they ride the snapshot the connected client
+    receives, because the ``connection_manager`` fixture seeds from this very instance.
+    """
+    return ActivityFeed(max_lines=50)
+
+
 @pytest_asyncio.fixture
-async def connection_manager(queue):
+async def connection_manager(queue, activity_feed):
     """A ConnectionManager bound to the per-test queue, also wired into the WS /ws route.
 
     Overriding the provider makes the endpoint use this exact instance, so a test can run the
     broadcaster against the very manager the route serves (and assert frames land on a connected
-    client). The manager shares the per-test Redis client through ``queue``.
+    client). The manager shares the per-test Redis client through ``queue`` and the per-test
+    ring buffer through ``activity_feed``.
     """
-    manager = ConnectionManager(queue)
+    manager = ConnectionManager(queue, activity_feed)
     app.dependency_overrides[get_connection_manager] = lambda: manager
     yield manager
     app.dependency_overrides.clear()

@@ -67,6 +67,12 @@ class Settings(BaseSettings):
     # dashboard's vitals stay live without re-polling GET /api/metrics.
     metrics_tick_seconds: PositiveInt = 1
 
+    # ---- Activity feed (Epic 10d) ----
+    # How many recent activity lines the in-memory ring buffer keeps. A late-joining client is
+    # seeded with these on connect (folded into the snapshot frame); past this length the oldest
+    # line is dropped. Ephemeral by design — Postgres remains the durable record.
+    activity_feed_max_lines: PositiveInt = 50
+
     # ---- Autoscaler thresholds (TDD §5.5) ----
     # min_workers may be 0 (scale all the way down when idle); scale_down_threshold may be
     # 0 (only scale down when the queue is fully empty).
