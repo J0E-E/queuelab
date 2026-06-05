@@ -23,6 +23,10 @@ dev = [
     "testcontainers>=4.8",
     # FastAPI's TestClient (used by the app smoke tests) drives the app through httpx.
     "httpx>=0.28",
+    # WebSocket client for the realtime tests. Its ASGIWebSocketTransport lets a test connect
+    # to WS /ws in-process on the same event loop as the async Redis/Postgres fixtures — the
+    # threaded TestClient would put that I/O on a different loop (see conftest's api_client).
+    "httpx-ws>=0.6",
 ]
 
 [tool.ruff]

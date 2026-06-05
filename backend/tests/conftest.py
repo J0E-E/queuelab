@@ -17,13 +17,21 @@ import pytest
 import pytest_asyncio
 from app.db.base import Base
 from app.db.engine import Database
-from app.dependencies import get_database, get_queue, get_rate_limiter, get_session_store
+from app.dependencies import (
+    get_connection_manager,
+    get_database,
+    get_queue,
+    get_rate_limiter,
+    get_session_store,
+)
 from app.main import app
 from app.queue.client import JobQueue
 from app.queue.protocol import JobRecord
+from app.realtime.connection_manager import ConnectionManager
 from app.services.rate_limit import RateLimiter
 from app.services.session_store import SessionStore
 from httpx import ASGITransport, AsyncClient
+from httpx_ws.transport import ASGIWebSocketTransport
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import create_async_engine
 from testcontainers.postgres import PostgresContainer
@@ -132,6 +140,38 @@ async def api_client(queue, database, rate_limiter, session_store):
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
     app.dependency_overrides.clear()
+
+
+@pytest_asyncio.fixture
+async def connection_manager(queue):
+    """A ConnectionManager bound to the per-test queue, also wired into the WS /ws route.
+
+    Overriding the provider makes the endpoint use this exact instance, so a test can run the
+    broadcaster against the very manager the route serves (and assert frames land on a connected
+    client). The manager shares the per-test Redis client through ``queue``.
+    """
+    manager = ConnectionManager(queue)
+    app.dependency_overrides[get_connection_manager] = lambda: manager
+    yield manager
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def ws_app_client():
+    """Factory for an httpx client that can open WS /ws in-process (httpx-ws transport).
+
+    ``ASGIWebSocketTransport`` drives the ASGI app for both HTTP and WebSocket, so the socket
+    lives on the same event loop as the async Redis/Postgres fixtures — the same reason
+    ``api_client`` avoids the threaded TestClient. It is a factory (not a yield-an-open-client
+    fixture) on purpose: the transport keeps an anyio cancel scope open across the connection,
+    which must be entered and exited inside the test's own task — pytest-asyncio runs fixture
+    setup and teardown in *different* tasks, which would trip that cancel scope.
+    """
+
+    def _make() -> AsyncClient:
+        return AsyncClient(transport=ASGIWebSocketTransport(app), base_url="http://test")
+
+    return _make
 
 
 @pytest.fixture

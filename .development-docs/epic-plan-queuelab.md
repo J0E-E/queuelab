@@ -785,7 +785,7 @@ explicit and acyclic.
     docstrings; production is ~183 lines for one cohesive subscriber concern, kept whole
     (human-acknowledged at completion, Epic 9 precedent).
 
-## Epic 10b — Real-time broadcaster & `WS /ws` (snapshot + deltas)
+## Epic 10b — Real-time broadcaster & `WS /ws` (snapshot + deltas) — **COMPLETED**
 - **Goal:** A browser connects to `WS /ws`, immediately receives a snapshot of current
   queue state, then receives per-job state-change deltas in real time as a batch runs.
 - **Rough scope:** A connection manager (track clients, snapshot-on-connect from queue
@@ -798,7 +798,61 @@ explicit and acyclic.
   per-session filtering — this is a multiplayer view, so recommend broadcast-all. Settle at
   epic time.
 - **Depends on:** Epic 10a.
-- **Implementation notes:** _none yet_
+- **Implementation notes:**
+  - **Decisions settled.** Envelope is `{"type": "snapshot" | "delta", …}`. Snapshot carries
+    **counts + in-flight jobs** (`queue.counts()` plus every active job). **Broadcast-all**, no
+    per-session filtering or auth — a shared multiplayer view. **`session_id` is never
+    broadcast**: both the snapshot job projection and the deltas drop it, since it is the
+    rate-limit key the REST layer already withholds (`JobResponse`). Test connects to the real
+    `/ws` via the small **`httpx-ws`** dev dep on the existing same-event-loop `ASGITransport`
+    pattern (the suite deliberately avoids the threaded `TestClient`).
+  - **`JobQueue.active_jobs()`** (new read helper) gathers ids from `ready` + `leases` +
+    `delayed`, de-dupes, then reads each `ql:job:{id}` hash in **one pipeline**; a hash that
+    vanished mid-read (TTL/ack race) is skipped, so the snapshot is best-effort.
+  - **`ConnectionManager`** (`backend/app/realtime/connection_manager.py`): `connect` accepts +
+    sends the snapshot + registers (in that order); `broadcast` fans a frame to a **copy** of the connection set
+    and drops any socket that raises (one dead client can't stop the rest). `_project_job` builds
+    the public per-job dict (no `session_id`; lifts `type`/`complexity` out of `payload`).
+  - **`run_broadcaster`** (`backend/app/realtime/broadcaster.py`) is the read-many twin of the
+    durable-writer: same `queue.pubsub()` loop, re-subscribe-after-`RESUBSCRIBE_DELAY_SECONDS`,
+    best-effort per-message handler, cancel-on-shutdown. Started/stopped in the lifespan beside
+    the reaper and durable-writer; the `ConnectionManager` lives on `app.state` (no task of its
+    own). `get_connection_manager` takes a `WebSocket` (not `Request`) since it is WS-only.
+  - **Known limitation (out of scope).** `enqueue()` publishes no `queued` event, so a freshly
+    submitted job first appears as a **delta** when it is claimed (`running`); until then it is
+    visible only via the **snapshot** to clients that connect after it queued. A live `queued`
+    delta would touch the hot producer path / Lua — left to a later epic.
+  - **Test deviation.** The WS client is a **factory fixture** (`ws_app_client`) that the test
+    opens/closes inside its own task, not a yield-an-open-client fixture: `ASGIWebSocketTransport`
+    keeps an anyio cancel scope across the connection, which can't cross pytest-asyncio's
+    setup/teardown task boundary. `_poll_until` / `_wait_for_subscriber` / `_running_broadcaster`
+    are local copies mirroring the durable-writer suite (per that suite's precedent).
+  - **Size.** ~444 changed lines / 10 non-generated files / 2 phases — over the ~150 rule of
+    thumb, but **one cohesive concern** (real-time fan-out of one event stream); ~171 lines are
+    tests + the conftest fixtures and much of the rest is the repo's mandated module/method
+    docstrings. Kept whole — mirrors Epic 10a (human-approved at plan time).
+  - **Verified.** ruff `check` + `format --check` clean (47 files); backend `pytest` **93
+    passed** (91 prior + 2 realtime integration) against an auto-spun real Redis 7 / Postgres 16
+    via testcontainers. Ran against `backend/.venv` (`uv` not on PATH on this machine).
+  - **Snapshot vs delta shape (caveat for Epic 10c consumer).** The two frames carry *different*
+    per-job shapes: the snapshot's `_project_job` includes `type`/`complexity`/`attempts`/
+    `enqueued_at`, but a `delta` forwards the raw Lua state event, which carries only
+    `job_id`/`state`/`worker_id`/`started_at`(/`completed_at`). A client must merge a delta into
+    the job it already holds from the snapshot, keyed by `job_id`. Intentional — deltas ride the
+    existing `ql:events:state` stream unchanged rather than re-reading the hash on the hot path.
+  - **Review fixes (Epic 4 round).** Two minor robustness fixes applied: `WS /ws` now deregisters
+    in a `finally` so any exit path forgets the socket; `ConnectionManager.connect` sends the
+    snapshot *before* registering, so a failed send can't leave a dead socket and the snapshot
+    always precedes any delta. Rejected: guarding `active_jobs` against partial hashes (the
+    atomic multi-field `HSET` makes a partial `HGETALL` unobservable) and the `pipe`/`ws` naming
+    nits (idiomatic redis-py / WebSocket abbreviations).
+  - **Completion gate (10b).** Re-ran the full green gate at completion — ruff `check` +
+    `format --check` clean (49 files), backend `pytest` **93 passed** against an auto-spun real
+    Redis 7 / Postgres 16 via testcontainers, matching the Verified count. Final diff is ~450
+    non-doc insertions / 10 non-doc files (501 total over 11 incl. the plan doc), in line with
+    the Size note; overage is the integration tests + conftest fixtures plus the module's
+    mandated docstrings for one cohesive concern, kept whole (human-acknowledged at completion,
+    Epic 10a precedent).
 
 ## Epic 10c — Metrics & activity feed
 - **Goal:** The dashboard gets aggregate vitals and a human-readable activity feed: a

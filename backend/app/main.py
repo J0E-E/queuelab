@@ -26,9 +26,11 @@ from app.config import settings
 from app.db.engine import Database
 from app.dependencies import get_database, get_queue, get_rate_limiter, get_session_store
 from app.queue.client import JobQueue
+from app.realtime.broadcaster import run_broadcaster
+from app.realtime.connection_manager import ConnectionManager
 from app.realtime.durable_writer import run_durable_writer
 from app.reaper import run_reaper
-from app.routers import jobs, session
+from app.routers import jobs, realtime, session
 from app.services.guardrails import register_guardrail_handlers
 from app.services.rate_limit import RateLimiter
 from app.services.session_store import SessionStore
@@ -45,6 +47,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.database = Database.from_settings()
     app.state.rate_limiter = RateLimiter.from_settings()
     app.state.session_store = SessionStore.from_settings()
+    # The connection manager tracks every open WS /ws client and seeds each with a snapshot on
+    # connect (Epic 10b). It holds no background task of its own; the broadcaster below pushes
+    # deltas through it for the life of the process.
+    app.state.connection_manager = ConnectionManager(app.state.queue)
     # The reaper sweeps Redis on a tick to promote due delayed jobs and requeue expired
     # leases (Epic 9). It runs for the life of the process and is cancelled on shutdown.
     reaper_task = asyncio.create_task(
@@ -59,14 +65,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         run_durable_writer(app.state.queue, app.state.database)
     )
     app.state.durable_writer_task = durable_writer_task
+    # The broadcaster subscribes to the same state-change channel and fans each event out to
+    # every connected WS /ws client through the connection manager (Epic 10b). Like the reaper
+    # and durable-writer it runs for the life of the process and is cancelled on shutdown.
+    broadcaster_task = asyncio.create_task(
+        run_broadcaster(app.state.queue, app.state.connection_manager)
+    )
+    app.state.broadcaster_task = broadcaster_task
     try:
         yield
     finally:
-        # Stop the background tasks before closing the clients, so an in-flight sweep or
-        # durable write never hits a closed Redis/Postgres client.
+        # Stop the background tasks before closing the clients, so an in-flight sweep, durable
+        # write, or broadcast never hits a closed Redis/Postgres client.
         reaper_task.cancel()
         durable_writer_task.cancel()
-        for background_task in (reaper_task, durable_writer_task):
+        broadcaster_task.cancel()
+        for background_task in (reaper_task, durable_writer_task, broadcaster_task):
             with suppress(asyncio.CancelledError):
                 await background_task
         # Close every client independently. Running them together (gather) and keeping
@@ -87,6 +101,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="QueueLab API", lifespan=lifespan)
 app.include_router(session.router)
 app.include_router(jobs.router)
+app.include_router(realtime.router)
 # Turn guardrail errors (caps, rate limits, full queue) into system-voiced HTTP responses.
 # The producer endpoints (POST /api/jobs) are the first to raise them.
 register_guardrail_handlers(app)

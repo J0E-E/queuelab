@@ -9,10 +9,11 @@ import them without importing the app object — which would be an import cycle,
 
 from __future__ import annotations
 
-from fastapi import Request
+from fastapi import Request, WebSocket
 
 from app.db.engine import Database
 from app.queue.client import JobQueue
+from app.realtime.connection_manager import ConnectionManager
 from app.services.rate_limit import RateLimiter
 from app.services.session_store import SessionStore
 
@@ -35,3 +36,12 @@ def get_rate_limiter(request: Request) -> RateLimiter:
 def get_session_store(request: Request) -> SessionStore:
     """Provide the shared guest-session store to a route (FastAPI dependency)."""
     return request.app.state.session_store
+
+
+def get_connection_manager(websocket: WebSocket) -> ConnectionManager:
+    """Provide the shared WebSocket connection manager to the ``/ws`` route.
+
+    Takes a :class:`WebSocket` rather than a :class:`Request` because it is only ever resolved
+    inside the WebSocket route — both reach the shared instance through the same ``app.state``.
+    """
+    return websocket.app.state.connection_manager

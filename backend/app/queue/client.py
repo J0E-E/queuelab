@@ -291,3 +291,38 @@ class JobQueue:
         ready = await self._redis.llen(READY_KEY)
         delayed = await self._redis.zcard(DELAYED_KEY)
         return ready + delayed
+
+    async def active_jobs(self) -> list[JobRecord]:
+        """Return the records of every job currently in the system, for a fresh snapshot.
+
+        "Active" means not yet aged out: jobs waiting on the ready queue, in flight under a
+        claim (lease), or waiting on the delayed (retry-backoff) set. The real-time layer
+        (Epic 10b) sends these the moment a browser connects, so a late-joiner sees the live
+        grid seeded rather than just the aggregate counts.
+
+        A job sits in exactly one of those three structures at a time, but ids are de-duplicated
+        defensively (a claim or requeue racing this read could briefly show one in two places).
+        Each id's full record lives in its own ``ql:job:{id}`` hash; those are read in a single
+        pipeline. A hash that vanished between listing its id and reading it (a TTL lapse or a
+        concurrent ack) is skipped, so the snapshot is best-effort and never raises on a
+        mid-flight change.
+        """
+        ready = await self._redis.lrange(READY_KEY, 0, -1)
+        leased = await self._redis.zrange(LEASES_KEY, 0, -1)
+        delayed = await self._redis.zrange(DELAYED_KEY, 0, -1)
+
+        seen: set[str] = set()
+        ordered_ids: list[str] = []
+        for job_id in (*ready, *leased, *delayed):
+            if job_id not in seen:
+                seen.add(job_id)
+                ordered_ids.append(job_id)
+        if not ordered_ids:
+            return []
+
+        async with self._redis.pipeline(transaction=False) as pipe:
+            for job_id in ordered_ids:
+                pipe.hgetall(job_key(job_id))
+            hashes = await pipe.execute()
+
+        return [JobRecord.from_hash(raw) for raw in hashes if raw]
