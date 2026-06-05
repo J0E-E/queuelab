@@ -854,19 +854,37 @@ explicit and acyclic.
     mandated docstrings for one cohesive concern, kept whole (human-acknowledged at completion,
     Epic 10a precedent).
 
-## Epic 10c — Metrics & activity feed
-- **Goal:** The dashboard gets aggregate vitals and a human-readable activity feed: a
-  `GET /api/metrics` snapshot, a throttled metrics tick pushed over `/ws`, and an
-  activity-feed stream of recent state changes.
-- **Rough scope:** `backend/app/services/metrics.py` (compute metrics from queue counts /
-  derived state), the `GET /api/metrics` endpoint, a throttled metrics tick broadcast over the
-  `/ws` channel, and `backend/app/services/activity_feed.py` (recent state-change lines fanned
-  out over `/ws`). Tests cover the metrics snapshot matching counts and the throttled tick /
-  feed fan-out.
-- **Open questions / decisions for stakeholders:** Tick interval / throttle source (reuse a
-  settings value); feed retention (in-memory ring buffer vs Redis-backed, and length). Settle
-  at epic time.
+## Epic 10c — Metrics (snapshot & throttled tick)
+- **Goal:** The dashboard gets aggregate vitals: a `GET /api/metrics` snapshot of the live
+  queue counts plus derived state (queue depth, worker count), and a throttled metrics tick
+  pushed over `/ws` so those vitals stay live without re-polling.
+- **Rough scope:** `backend/app/services/metrics.py` (compute metrics from `queue.counts()`
+  plus derived state), a `GET /api/metrics` endpoint (new `backend/app/routers/metrics.py` +
+  a `MetricsResponse` schema), and a throttled metrics-tick task under `backend/app/realtime/`
+  broadcasting a `{"type": "metrics", …}` frame over `/ws`, wired into the api lifespan beside
+  the reaper/broadcaster. Tests cover the snapshot matching counts and the throttled tick
+  fan-out.
+- **Open questions / decisions for stakeholders:** Settled at split time — the tick interval is
+  a new dedicated `metrics_tick_seconds` setting (default `1`), the timer itself acting as the
+  throttle. Nothing else expected.
 - **Depends on:** Epic 10b.
+- **Implementation notes:** _none yet_
+
+## Epic 10d — Activity feed
+- **Goal:** The dashboard gets a human-readable activity feed: recent job state-changes
+  rendered as one-line entries and fanned out over `/ws`, with a freshly-connected client
+  seeded with the recent history.
+- **Rough scope:** `backend/app/services/activity_feed.py` (format a public state event into a
+  readable line; keep a bounded ring buffer of recent lines), a subscriber that fans each new
+  line out over `/ws` as a `{"type": "activity", …}` frame, and connect-time seeding of the
+  recent lines (mirroring the snapshot). Tests cover the line fan-out and the connect-time
+  seeding.
+- **Open questions / decisions for stakeholders:** Settled at split time — retention is an
+  in-memory ring buffer (length ~50), ephemeral by design (Postgres remains the durable
+  record). For epic time: whether the fan-out rides a new dedicated `realtime/` subscriber
+  (recommended, matching the durable-writer/broadcaster pattern) or hooks the existing
+  broadcaster.
+- **Depends on:** Epic 10c.
 - **Implementation notes:** _none yet_
 
 ## Epic 11 — Autoscaler (control loop & Docker control)
@@ -881,7 +899,7 @@ explicit and acyclic.
 - **Verification:** Flood queue → autoscaler spawns workers up to cap; idle past
   `idle_timeout` → scale down to `min_workers`; each step writes a scaling_event +
   feed line; Pytest for threshold/idle policy decisions.
-- **Depends on:** Epic 10c.
+- **Depends on:** Epic 10d.
 
 ## Epic 12 — Chaos endpoints
 - **Intent:** Destroy-worker and inject-failures, wired through the autoscaler and
