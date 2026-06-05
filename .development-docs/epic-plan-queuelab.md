@@ -854,7 +854,7 @@ explicit and acyclic.
     mandated docstrings for one cohesive concern, kept whole (human-acknowledged at completion,
     Epic 10a precedent).
 
-## Epic 10c — Metrics (snapshot & throttled tick)
+## Epic 10c — Metrics (snapshot & throttled tick) — **COMPLETED**
 - **Goal:** The dashboard gets aggregate vitals: a `GET /api/metrics` snapshot of the live
   queue counts plus derived state (queue depth, worker count), and a throttled metrics tick
   pushed over `/ws` so those vitals stay live without re-polling.
@@ -868,7 +868,45 @@ explicit and acyclic.
   a new dedicated `metrics_tick_seconds` setting (default `1`), the timer itself acting as the
   throttle. Nothing else expected.
 - **Depends on:** Epic 10b.
-- **Implementation notes:** _none yet_
+- **Implementation notes:**
+  - **One shared service feeds both transports.** `backend/app/services/metrics.py` exposes a
+    single `compute_metrics(queue) -> dict` returning `{"counts": <queue.counts()>,
+    "queue_depth": <queue.queue_depth()>, "worker_count": len(queue.list_workers())}`. The REST
+    endpoint and the WS tick both read it, so the pulled snapshot and the pushed tick can never
+    disagree. It is a thin read over existing `JobQueue` helpers — no new Redis access.
+  - **Worker count = all registered workers** (`len(queue.list_workers())`), settled with the
+    stakeholder. Pruning a hard-killed worker by stale heartbeat age is the autoscaler's job
+    (Epic 11), so metrics stays a plain count rather than re-deriving liveness here.
+  - **Frame/response shape mirrors the snapshot envelope.** REST returns a typed
+    `MetricsResponse` (`counts: QueueCounts` + `queue_depth` + `worker_count`); the tick wraps the
+    same dict as `{"type": "metrics", "counts": {...}, "queue_depth": N, "worker_count": N}`,
+    matching Epic 10b's `{"type": "snapshot", "counts": {...}, "jobs": [...]}`. `queue_depth` is
+    read straight from the ready list (`LLEN`), the authoritative depth, distinct from the
+    `counts.queued` tally even though they normally agree.
+  - **Tick mirrors the reaper loop.** `backend/app/realtime/metrics_tick.py` `run_metrics_tick`
+    sleeps first, is best-effort (logs and continues on error so a transient Redis blip never
+    stops the feed), and never catches `CancelledError`, so the lifespan cancels it cleanly on
+    shutdown. Wired into the lifespan beside the broadcaster, using the new
+    `metrics_tick_seconds` setting (default `1`; the timer is itself the throttle).
+  - **Phasing.** Phase 1 — service + `MetricsResponse`/`QueueCounts` schema + `GET /api/metrics`
+    router (registered in `main.py`) + snapshot test. Phase 2 — `metrics_tick_seconds` setting +
+    tick task + lifespan wiring + fan-out test. The tick test is simpler than the broadcaster's
+    (no pub/sub, so no wait-for-subscriber) — drain the snapshot, run a fast tick, assert one
+    `metrics` frame.
+  - **Size.** ~258 changed lines / 8 non-generated files (5 new + 3 edited) / 2 phases — over the
+    ~150 rule of thumb, but **one cohesive concern** (queue vitals delivered over REST pull + WS
+    push, sharing one service); ~88 lines are the two integration tests and much of the rest is
+    the repo's mandated docstrings. Kept whole — well within the Epic 10a/10b precedent.
+  - **Verified.** ruff `check` + `format --check` clean (54 files); backend `pytest` **95 passed**
+    (93 prior + 2 new: metrics snapshot + metrics tick) against an auto-spun real Redis 7 /
+    Postgres 16 via testcontainers. Ran against `backend/.venv` (`uv` not on PATH on this machine).
+  - **Completion gate (10c).** Review came back clean (Approve with nits — no fixes required, so no
+    review-fixes bullet). Re-ran the full green gate at completion — ruff `check` + `format --check`
+    clean (54 files), backend `pytest` **95 passed** against an auto-spun real Redis 7 / Postgres 16
+    via testcontainers, matching the Verified count. Final non-doc diff is ~258 changed lines / 8
+    files (5 new + 3 edited) — over the ~150 line rule of thumb but at the ~8-file budget; overage is
+    the two integration tests plus the module's mandated docstrings for one cohesive concern, kept
+    whole (human-acknowledged at completion, Epic 10a/10b precedent).
 
 ## Epic 10d — Activity feed
 - **Goal:** The dashboard gets a human-readable activity feed: recent job state-changes

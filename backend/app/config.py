@@ -61,6 +61,12 @@ class Settings(BaseSettings):
     # mirroring the autoscaler control loop.
     reaper_loop_seconds: PositiveInt = 2
 
+    # ---- Metrics (snapshot & throttled tick, Epic 10c) ----
+    # How often the api process pushes the aggregate queue vitals (counts + queue depth +
+    # worker count) to every WS /ws client. The tick timer is itself the throttle, so the
+    # dashboard's vitals stay live without re-polling GET /api/metrics.
+    metrics_tick_seconds: PositiveInt = 1
+
     # ---- Autoscaler thresholds (TDD §5.5) ----
     # min_workers may be 0 (scale all the way down when idle); scale_down_threshold may be
     # 0 (only scale down when the queue is fully empty).

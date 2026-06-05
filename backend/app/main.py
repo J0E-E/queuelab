@@ -29,8 +29,9 @@ from app.queue.client import JobQueue
 from app.realtime.broadcaster import run_broadcaster
 from app.realtime.connection_manager import ConnectionManager
 from app.realtime.durable_writer import run_durable_writer
+from app.realtime.metrics_tick import run_metrics_tick
 from app.reaper import run_reaper
-from app.routers import jobs, realtime, session
+from app.routers import jobs, metrics, realtime, session
 from app.services.guardrails import register_guardrail_handlers
 from app.services.rate_limit import RateLimiter
 from app.services.session_store import SessionStore
@@ -72,15 +73,33 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         run_broadcaster(app.state.queue, app.state.connection_manager)
     )
     app.state.broadcaster_task = broadcaster_task
+    # The metrics tick pushes the queue's aggregate vitals (counts + queue depth + worker count)
+    # to every connected WS /ws client every ``metrics_tick_seconds`` (Epic 10c), so the
+    # dashboard's vitals stay live without re-polling GET /api/metrics. Like the others it runs
+    # for the life of the process and is cancelled on shutdown.
+    metrics_tick_task = asyncio.create_task(
+        run_metrics_tick(
+            app.state.queue,
+            app.state.connection_manager,
+            interval_seconds=settings.metrics_tick_seconds,
+        )
+    )
+    app.state.metrics_tick_task = metrics_tick_task
     try:
         yield
     finally:
         # Stop the background tasks before closing the clients, so an in-flight sweep, durable
-        # write, or broadcast never hits a closed Redis/Postgres client.
+        # write, broadcast, or metrics tick never hits a closed Redis/Postgres client.
         reaper_task.cancel()
         durable_writer_task.cancel()
         broadcaster_task.cancel()
-        for background_task in (reaper_task, durable_writer_task, broadcaster_task):
+        metrics_tick_task.cancel()
+        for background_task in (
+            reaper_task,
+            durable_writer_task,
+            broadcaster_task,
+            metrics_tick_task,
+        ):
             with suppress(asyncio.CancelledError):
                 await background_task
         # Close every client independently. Running them together (gather) and keeping
@@ -102,6 +121,7 @@ app = FastAPI(title="QueueLab API", lifespan=lifespan)
 app.include_router(session.router)
 app.include_router(jobs.router)
 app.include_router(realtime.router)
+app.include_router(metrics.router)
 # Turn guardrail errors (caps, rate limits, full queue) into system-voiced HTTP responses.
 # The producer endpoints (POST /api/jobs) are the first to raise them.
 register_guardrail_handlers(app)

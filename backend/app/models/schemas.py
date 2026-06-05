@@ -92,6 +92,36 @@ class JobPage(BaseModel):
     offset: int
 
 
+class QueueCounts(BaseModel):
+    """The live per-state job tallies from the queue's counts hash (Epic 10c).
+
+    ``queued``/``running``/``retrying`` are point-in-time (jobs currently in that state);
+    ``completed``/``failed`` are cumulative lifetime totals that only ever climb. The fields
+    mirror the queue client's ``COUNT_FIELDS`` exactly.
+    """
+
+    queued: int
+    running: int
+    completed: int
+    failed: int
+    retrying: int
+
+
+class MetricsResponse(BaseModel):
+    """The queue's aggregate vitals returned by ``GET /api/metrics`` (Epic 10c).
+
+    ``counts`` is the live per-state tally; ``queue_depth`` is how many jobs are waiting on the
+    ready queue right now (read straight from the list, the authoritative depth); ``worker_count``
+    is how many workers are registered in ``ql:workers``. The metrics tick pushes this same shape
+    over ``WS /ws`` as a ``{"type": "metrics", ...}`` frame, so the pulled snapshot and the live
+    tick agree.
+    """
+
+    counts: QueueCounts
+    queue_depth: int
+    worker_count: int
+
+
 class ScalingEventResponse(BaseModel):
     """A scaling-event row as the API returns it."""
 
