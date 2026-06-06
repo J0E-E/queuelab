@@ -1152,14 +1152,33 @@ explicit and acyclic.
   - **Re-verified after review fixes.** ruff `check` + `format --check` clean; the two epic test
     files pass **15** (14 prior + 1 new cap-clamp guard test) against auto-spun Redis/Postgres.
 
-## Epic 11d — Manual control channel & config API
-- **Goal:** Operators can drive scaling manually and adjust the autoscaler thresholds
-  at runtime.
-- **Rough scope:** a `ql:control` channel consumer folded into the control loop
-  (manual scale commands) and `GET/PUT /api/config` endpoints that read and update the
-  live autoscaler thresholds. Integration test for the control-channel commands.
+## Epic 11d-1 — Manual control channel
+- **Goal:** Operators can drive scaling manually — a command on `ql:control` (add N
+  workers / kill worker X) is consumed by the autoscaler and carried out via the
+  existing Docker control.
+- **Rough scope:** a `CONTROL_CHANNEL = "ql:control"` constant + a
+  `publish_control_command` helper on `JobQueue`; a control consumer in the autoscaler
+  process reusing `run_state_subscriber`, mapping `scale_up`/`scale_down` commands onto
+  the existing `_carry_out_decision`/clamp helpers (max_workers respected; scale_down
+  kills + deregisters), wired beside the tick loop under one `asyncio.gather`/`stop_event`.
+  No HTTP scale endpoint — the operator trigger comes via the frontend / Epic 12, which
+  already publish on `ql:control`. Integration test publishes to `ql:control` directly
+  (testcontainers Redis, faked DockerControl).
 - **Open questions / decisions for stakeholders:** none expected.
 - **Depends on:** Epic 11c.
+- **Implementation notes:** _none yet_
+
+## Epic 11d-2 — Live config API
+- **Goal:** Operators can read and adjust the live autoscaler thresholds at runtime.
+- **Rough scope:** a `ql:config` Redis hash + `get_config`/`set_config` helpers on
+  `JobQueue`; the autoscaler builds effective settings each tick by merging `ql:config`
+  overrides over the env-loaded `settings` (no config pub/sub — the ~2s loop is fresh
+  enough), passing them to the already-per-call `decide_scaling`; `GET/PUT /api/config`
+  (new `routers/config.py`, Pydantic models reusing the `Settings` threshold-bound
+  validators) registered in `main.py`. Tests: API round-trip via the `api_client`
+  fixture + a tick test proving an override is honored.
+- **Open questions / decisions for stakeholders:** none expected.
+- **Depends on:** Epic 11d-1.
 - **Implementation notes:** _none yet_
 
 ## Epic 12 — Chaos endpoints
@@ -1173,7 +1192,7 @@ explicit and acyclic.
 - **Verification:** `POST /api/chaos/destroy-worker` → container killed, lease lapses,
   reaper requeues job, autoscaler may replace; inject-failures biases outcomes toward
   `failed`; rate limit returns 429.
-- **Depends on:** Epic 11d.
+- **Depends on:** Epic 11d-2.
 
 ## Epic 13 — Frontend foundation & style-guide primitives
 - **Intent:** The Terminal CLI frontend shell with design tokens and the primitive
