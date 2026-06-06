@@ -1075,7 +1075,7 @@ explicit and acyclic.
     surface only at integration time as a silent (`NotFound`-swallowed) no-op kill. (Review
     suggestion 1 — `list_workers` docstring wording — was fixed in code.)
 
-## Epic 11c — Autoscaler process & scaling events
+## Epic 11c — Autoscaler process & scaling events — **COMPLETED**
 - **Goal:** A long-lived autoscaler process runs the control loop, scaling workers by
   queue depth and recording every step.
 - **Rough scope:** `backend/app/autoscaler_main.py` entrypoint (asyncio loop building
@@ -1087,7 +1087,70 @@ explicit and acyclic.
   `min_workers`.
 - **Open questions / decisions for stakeholders:** none expected.
 - **Depends on:** Epic 11b.
-- **Implementation notes:** _none yet_
+- **Implementation notes:**
+  - **Built across 4 phases (planned).** (1) `autoscaler_main.py` entrypoint + `run_autoscaler`
+    control loop + `IdleTracker` + Docker execution, logged; (2) persist a `scaling_event` row per
+    action; (3) publish + render the activity-feed line; (4) compose command + end-to-end test.
+  - **Process shape mirrors the worker.** `async main()` builds `JobQueue` + `DockerControl` +
+    `Database` from settings, installs SIGTERM/SIGINT handlers, and runs until a `stop_event` set by
+    those signals — the worker's graceful-shutdown shape. The loop is factored around a single-tick
+    coroutine `_run_one_tick` so each action is unit-testable; the tick is best-effort (a failure is
+    logged and the loop carries on). Between ticks it sleeps up to `autoscaler_loop_seconds` but
+    wakes immediately on stop.
+  - **Worker count comes from the registry, not Docker.** The loop counts workers from
+    `ql:workers` (the same shape the 11a policy reasons over), so a worker counts only once it has
+    booted and registered. `now_ms` is read from Redis `TIME` (new `JobQueue.now_ms()` helper, which
+    `heartbeat` now reuses too) so the staleness check is free of cross-container clock skew.
+  - **Idle duration is loop-tracked (settled in 11a).** `IdleTracker` stamps when the queue first
+    drops to ≤ `scale_down_threshold` and clears on the first busy tick, so `queue_idle_seconds` is
+    the *continuous* quiet stretch handed to `decide_scaling`.
+  - **Deviation — killed workers are deregistered.** After `kill_worker`, the loop also
+    `deregister_worker`s it from `ql:workers`: a force-removed container can't run its own graceful
+    deregister, so without this its stale field would linger and re-trigger `replace` forever.
+  - **Deviation — `replace` is kill+start in one tick.** The loop kills+deregisters the unhealthy
+    worker *and* spawns a fresh one in the same step (matching the word "replace"), so the count is
+    unchanged.
+  - **Deviation — `worker_count_after` is arithmetic, not a re-read.** Computed as
+    `before + count` (up) / `before − 1` (down) / `before` (replace), because a freshly spawned
+    container takes a moment to register, so an immediate registry re-read would still show the old
+    count.
+  - **Deviation — dedicated `ql:events:scaling` channel for the feed line.** Rather than reuse
+    `ql:events:state` (whose subscribers, the broadcaster and durable-writer, would misread a
+    scaling action as a job state-change), the autoscaler publishes each action on a new
+    `SCALING_CHANNEL` via a new `JobQueue.publish_scaling_event()`. A new api-side subscriber
+    `run_scaling_feed` (reusing the shared `run_state_subscriber` skeleton) formats it with
+    `format_scaling_line`, buffers it in the activity ring, and fans it out as the same
+    `{"type": "activity", "line": …}` frame the job feed uses — wired into the api lifespan beside
+    the other subscribers. The recorded and published payloads are the one same event dict, so they
+    can't drift.
+  - **Compose.** Real `command: ["python", "-m", "app.autoscaler_main"]`; added `postgres`
+    (`service_healthy`) to the autoscaler service's `depends_on` since it now writes rows.
+  - **Size — over budget, justified.** ~726 lines across 9 files (~347 source over 7 non-test
+    files; the rest tests). Above the ~150-line budget but one cohesive behavior (the control loop),
+    with 11a/11b already split off — keeping it whole was approved at plan time. New: `autoscaler_main.py`,
+    `realtime/scaling_feed.py`, `tests/test_autoscaler_main.py`, `tests/test_realtime_scaling_feed.py`.
+    Edited: `queue/client.py`, `queue/protocol.py`, `services/activity_feed.py`, `main.py`,
+    `docker-compose.yml`.
+  - **Verified.** ruff `check` + `format --check` clean; `pytest` **146 passed** (132 prior + 14
+    new) against auto-spun real Redis 7 / Postgres 16 via testcontainers (DockerControl faked, so no
+    daemon or worker image needed). End-to-end test: flood → scales up to `max_workers` and holds at
+    the cap; drain + idle past `idle_timeout` → scales down one-per-tick to `min_workers`; one
+    `scaling_event` row + one `activity` frame per non-no-op step.
+  - **Review fix — scale-up clamped to the *running* container count (deviation).** The policy caps
+    the fleet against the registry, but a spawned worker doesn't register for a few seconds (longer
+    than one tick), so a sustained flood would re-spawn each tick and overshoot the hard
+    `max_workers` cap. `_clamp_scale_up_to_running_cap` now reads `DockerControl.list_workers()` (a
+    container is "running" the moment it starts, before it registers) and trims/suppresses the
+    spawn so the running fleet never exceeds the cap. This also closes the replace-churn window — a
+    just-replaced worker's not-yet-registered replacement no longer triggers a spurious extra spawn.
+  - **Review fix — recording is best-effort, so an executed action is never silently lost.** The
+    Docker action runs before the audit row is written; `_record_scaling_event` now logs the full
+    event on a DB failure instead of raising, so the executed step survives in the logs and the
+    live-feed publish still goes out.
+  - **Review fix — single-worker lines pluralize.** `format_scaling_line` reads "1 worker" /
+    "N workers" via a small `_workers_phrase` helper.
+  - **Re-verified after review fixes.** ruff `check` + `format --check` clean; the two epic test
+    files pass **15** (14 prior + 1 new cap-clamp guard test) against auto-spun Redis/Postgres.
 
 ## Epic 11d — Manual control channel & config API
 - **Goal:** Operators can drive scaling manually and adjust the autoscaler thresholds

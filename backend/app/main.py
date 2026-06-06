@@ -31,6 +31,7 @@ from app.realtime.broadcaster import run_broadcaster
 from app.realtime.connection_manager import ConnectionManager
 from app.realtime.durable_writer import run_durable_writer
 from app.realtime.metrics_tick import run_metrics_tick
+from app.realtime.scaling_feed import run_scaling_feed
 from app.reaper import run_reaper
 from app.routers import jobs, metrics, realtime, session
 from app.services.activity_feed import ActivityFeed
@@ -88,6 +89,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         run_activity_feed(app.state.queue, app.state.connection_manager, app.state.activity_feed)
     )
     app.state.activity_feed_task = activity_feed_task
+    # The scaling-feed subscriber is the autoscaler's twin of the activity subscriber: it listens
+    # on the separate scaling channel the autoscaler process publishes to, formats each action into
+    # a readable line, records it in the same ring buffer, and fans it out as an ``activity`` frame
+    # (Epic 11c). Like the others it runs for the life of the process and is cancelled on shutdown.
+    scaling_feed_task = asyncio.create_task(
+        run_scaling_feed(app.state.queue, app.state.connection_manager, app.state.activity_feed)
+    )
+    app.state.scaling_feed_task = scaling_feed_task
     # The metrics tick pushes the queue's aggregate vitals (counts + queue depth + worker count)
     # to every connected WS /ws client every ``metrics_tick_seconds`` (Epic 10c), so the
     # dashboard's vitals stay live without re-polling GET /api/metrics. Like the others it runs
@@ -110,12 +119,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         durable_writer_task.cancel()
         broadcaster_task.cancel()
         activity_feed_task.cancel()
+        scaling_feed_task.cancel()
         metrics_tick_task.cancel()
         for background_task in (
             reaper_task,
             durable_writer_task,
             broadcaster_task,
             activity_feed_task,
+            scaling_feed_task,
             metrics_tick_task,
         ):
             with suppress(asyncio.CancelledError):

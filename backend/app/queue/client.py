@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from redis.asyncio import Redis
 from redis.asyncio.client import PubSub
@@ -27,6 +28,7 @@ from .protocol import (
     DELAYED_KEY,
     LEASES_KEY,
     READY_KEY,
+    SCALING_CHANNEL,
     STATE_CHANNEL,
     WORKERS_KEY,
     JobRecord,
@@ -229,8 +231,7 @@ class JobQueue:
         autoscaler's staleness check is free of cross-container clock skew). Each worker is
         the sole writer of its own field, so a plain timestamp-then-write needs no Lua script.
         """
-        seconds, microseconds = await self._redis.time()
-        now_ms = (seconds * 1000) + (microseconds // 1000)
+        now_ms = await self.now_ms()
         record = json.dumps(
             {"state": state, "current_job": current_job, "last_heartbeat": now_ms},
             separators=(",", ":"),
@@ -249,6 +250,16 @@ class JobQueue:
         """Return the registry as ``{worker_id: {state, current_job, last_heartbeat}}``."""
         raw = await self._redis.hgetall(WORKERS_KEY)
         return {worker_id: json.loads(record) for worker_id, record in raw.items()}
+
+    async def publish_scaling_event(self, event: dict[str, Any]) -> None:
+        """Publish one autoscaler action on the scaling channel for the activity feed to render.
+
+        The autoscaler process records the action durably in Postgres and publishes the same
+        payload here; the api's scaling-feed subscriber turns it into a readable activity line for
+        every connected client. The channel is separate from ``STATE_CHANNEL`` so the job-state
+        subscribers never see a scaling action.
+        """
+        await self._redis.publish(SCALING_CHANNEL, json.dumps(event, separators=(",", ":")))
 
     # ---- Recovery (used by the reaper loop, Epic 9) ------------------------------
 
@@ -285,6 +296,16 @@ class JobQueue:
     async def queue_depth(self) -> int:
         """Return how many jobs are waiting on the ready queue."""
         return await self._redis.llen(READY_KEY)
+
+    async def now_ms(self) -> int:
+        """Return the current time in epoch milliseconds from Redis ``TIME``.
+
+        Redis is the one authoritative clock in the system: workers stamp their heartbeats from
+        it, so the autoscaler reading the same clock keeps its staleness check free of
+        cross-container clock skew (the autoscaler runs in a different container than the workers).
+        """
+        seconds, microseconds = await self._redis.time()
+        return (seconds * 1000) + (microseconds // 1000)
 
     async def total_queued(self) -> int:
         """Return jobs counting toward the cap: ready + delayed (running ones have left)."""

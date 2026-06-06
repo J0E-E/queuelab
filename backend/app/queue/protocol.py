@@ -42,6 +42,12 @@ WORKERS_KEY = "ql:workers"
 # blob carrying job_id, the new state, session_id, and timing fields.
 STATE_CHANNEL = "ql:events:state"
 
+# Pub/sub channel for autoscaler actions (Epic 11c). The autoscaler runs in its own process and
+# publishes each scaling action here; the api's scaling-feed subscriber renders it as an activity
+# line. A dedicated channel keeps these off STATE_CHANNEL, whose subscribers (broadcaster,
+# durable-writer) would otherwise misread a scaling action as a job state-change.
+SCALING_CHANNEL = "ql:events:scaling"
+
 
 def job_key(job_id: str) -> str:
     """Return the Redis Hash key holding the full record for ``job_id``."""

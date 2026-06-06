@@ -57,13 +57,16 @@ services:
       - path: .env
         required: false
     depends_on:
+      postgres:
+        # Writes a scaling_event audit row per action, so Postgres must be up first.
+        condition: service_healthy
       redis:
         condition: service_healthy
     volumes:
       # Sole holder of the Docker socket; spawns/kills sibling worker containers.
       - /var/run/docker.sock:/var/run/docker.sock
-    # Real command (autoscaler_main) added in Epic 11.
-    command: ["python", "-c", "print('queuelab autoscaler placeholder')"]
+    # The control loop: scale workers by queue depth, record each action (Epic 11c).
+    command: ["python", "-m", "app.autoscaler_main"]
 
   nginx:
     image: nginx:1.27-alpine

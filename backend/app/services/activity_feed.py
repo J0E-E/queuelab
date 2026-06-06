@@ -49,6 +49,33 @@ def format_activity_line(event: dict[str, Any]) -> str:
     return f"{job_id} → {state or 'unknown'}"
 
 
+def format_scaling_line(event: dict[str, Any]) -> str:
+    """Turn one autoscaler action (Epic 11c) into a single human-readable activity line.
+
+    The event is the payload the autoscaler publishes on ``SCALING_CHANNEL``: ``action``,
+    ``worker_id``, ``reason``, and ``worker_count_after``. The ``reason`` already spells out the
+    trigger (e.g. "queue_depth 12 > threshold 5 → +2"), so it rides along as a suffix; an
+    unrecognized action still yields a sensible line rather than being dropped.
+    """
+    action = event.get("action")
+    worker_count_after = event.get("worker_count_after")
+    reason = event.get("reason")
+    suffix = f" — {reason}" if reason else ""
+
+    if action == "scale_up":
+        return f"scaled up to {_workers_phrase(worker_count_after)}{suffix}"
+    if action == "scale_down":
+        return f"scaled down to {_workers_phrase(worker_count_after)}{suffix}"
+    if action == "replace":
+        return f"replaced {event.get('worker_id') or 'a worker'}{suffix}"
+    return f"{action or 'scaling'}{suffix}"
+
+
+def _workers_phrase(count: Any) -> str:
+    """``"1 worker"`` / ``"2 workers"`` — pluralize so a single-worker line reads naturally."""
+    return f"{count} worker" if count == 1 else f"{count} workers"
+
+
 def _worker(event: dict[str, Any]) -> str:
     """The worker that owns the job, or a neutral stand-in when the event omits one."""
     return event.get("worker_id") or "a worker"
