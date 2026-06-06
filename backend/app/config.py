@@ -100,6 +100,10 @@ class Settings(BaseSettings):
 
     # ---- Worker image the autoscaler launches at runtime ----
     worker_image: str = "queuelab-worker:latest"
+    # The Docker network the autoscaler attaches each spawned worker to, so the worker can reach
+    # the ``redis`` (and ``postgres``) compose service by hostname. Defaults to Compose's implicit
+    # project network; override if the compose project name differs.
+    worker_network: str = "queuelab_default"
 
     @model_validator(mode="after")
     def check_worker_bounds(self) -> "Settings":

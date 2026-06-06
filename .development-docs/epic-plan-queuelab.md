@@ -1029,7 +1029,7 @@ explicit and acyclic.
     **127 passed** (110 prior + 17 new autoscaler unit tests) against an auto-spun real Redis 7 /
     Postgres 16 via testcontainers. Ran against `backend/.venv` (`uv` not on PATH on this machine).
 
-## Epic 11b — Docker control
+## Epic 11b — Docker control — **COMPLETED**
 - **Goal:** A thin Docker wrapper can spawn, list, and kill worker containers over the
   mounted Docker socket.
 - **Rough scope:** `backend/app/services/docker_control.py` using the Docker SDK
@@ -1038,7 +1038,42 @@ explicit and acyclic.
   and kill/remove one. Tested with the Docker SDK mocked (or skip-if-no-socket).
 - **Open questions / decisions for stakeholders:** none expected.
 - **Depends on:** Epic 11a.
-- **Implementation notes:** _none yet_
+- **Implementation notes:**
+  - **Wrapper-only scope (planned).** Just the Docker SDK wrapper — no control loop, no
+    scaling decisions, no Redis/Postgres I/O (those are 11c). A single `DockerControl` class
+    in `services/docker_control.py` mirroring the existing service shape (injected client,
+    `from_settings()`, sync `close()`), with the Docker SDK injected so tests mock it.
+  - **Network (decided with stakeholder).** Spawned workers join the compose network via a new
+    explicit config setting `worker_network` (default `queuelab_default`) — matching the
+    codebase's named-setting style — rather than runtime auto-detection. Added to `config.py`
+    and `.env.example`.
+  - **Container metadata (decided with stakeholder).** Each worker is tagged with a
+    `com.queuelab.role=worker` label (so list/kill filter by it) and given a `REDIS_URL` env
+    var. The worker only touches Redis, so no `DATABASE_URL` is passed.
+  - **Worker id ⇄ container.** `kill_worker(worker_id)` resolves via `containers.get(worker_id)`;
+    the worker's `derive_worker_id()` is its hostname (= short container id), which `get()`
+    accepts as an id prefix. No explicit `--name` needed. A `NotFound` on kill is swallowed
+    (already-gone = success).
+  - **Phasing.** Phase 1 — module + `worker_network` config/env + `start_worker` (happy path) +
+    mocked tests. Phase 2 — `list_workers()` by label + tests. Phase 3 — `kill_worker` with
+    `NotFound` handling + tests.
+  - **Size.** ~2 new files (`services/docker_control.py`, `tests/test_docker_control.py`) + 2
+    small edits (`config.py`, `.env.example`) — within the review budget. Pure mocked unit
+    tests; no Docker daemon required. `docker>=7.1` already a backend dependency.
+  - **No deviations from the approved plan.** Implemented exactly as planned across the three
+    phases. `start_worker`/`list_workers` return the SDK `Container` object(s) directly (the loop
+    in 11c only needs the spawned container handle and the labelled list), and `kill_worker` uses
+    `remove(force=True)` to stop+remove in one call. Worker label lives as the module constants
+    `WORKER_LABEL` / `WORKER_LABEL_VALUE` (`com.queuelab.role=worker`).
+  - **Verified.** ruff `check` + `format --check` clean on the changed files; `pytest`
+    **132 passed** (127 prior + 5 new mocked Docker-control unit tests) against `backend/.venv`.
+    `settings.worker_network` loads as `queuelab_default`.
+  - **Review follow-up (deferred to 11c / worker epic).** `kill_worker(worker_id)` assumes a
+    worker registers in `ql:workers` under an id that is its container hostname / short-id prefix,
+    so `containers.get(worker_id)` resolves it. No worker process or `derive_worker_id()` exists
+    yet, so this is an integration contract the worker epic / 11c must honor — a mismatch would
+    surface only at integration time as a silent (`NotFound`-swallowed) no-op kill. (Review
+    suggestion 1 — `list_workers` docstring wording — was fixed in code.)
 
 ## Epic 11c — Autoscaler process & scaling events
 - **Goal:** A long-lived autoscaler process runs the control loop, scaling workers by
