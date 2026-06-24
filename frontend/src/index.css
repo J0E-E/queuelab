@@ -1,0 +1,117 @@
+/*
+ * QueueLab global stylesheet — the single source of truth for design tokens.
+ *
+ * Every value here is transcribed from .development-docs/ui-ux-style-guide.md (the Guide wins).
+ * Components reference these via Tailwind utilities mapped to the variables (tailwind.config.js) or
+ * the small utility classes below — never a hardcoded hex.
+ */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* core / UI (Guide §3.1) */
+  --color-bg: #0a0a0a;
+  --color-bg-raised: #101410;
+  --color-fg: #33ff00;
+  --color-fg-dim: #6f9f6f;
+  --color-muted: #1f521f;
+  --color-accent: #33ff00;
+  --color-bg-invert: #33ff00;
+
+  /* job-state phosphors (Guide §3.2) */
+  --state-queued: #36c5ff;
+  --state-running: #ffb000;
+  --state-completed: #33ff00;
+  --state-failed: #ff3333;
+  --state-retrying: #b46bff;
+
+  /* system / semantic (Guide §3.3) */
+  --color-error: #ff3333;
+  --color-warn: #ffb000;
+  --color-ok: #33ff00;
+  --color-info: #36c5ff;
+  --color-scale-up: #33ff00;
+  --color-scale-down: #ffb000;
+
+  /* type (Guide §4) */
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
+
+  /* radius / border (Guide §6) */
+  --radius: 0px;
+  --border-width: 1px;
+
+  /* effects (Guide §9) */
+  --glow-fg: 0 0 5px rgba(51, 255, 0, 0.45);
+  --scanline-opacity: 0.03;
+}
+
+@layer base {
+  html {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    color-scheme: dark;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--color-bg);
+    color: var(--color-fg);
+    font-size: 0.9375rem;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+@layer utilities {
+  /* Phosphor glow — headings, the cursor, active counters only (Guide §9), never body/tables. */
+  .glow {
+    text-shadow: var(--glow-fg);
+  }
+
+  /* The signature cursor blink (Guide §9 / §13). */
+  .animate-blink {
+    animation: blink 1s steps(1) infinite;
+  }
+
+  /* Faint CRT scanline overlay (Guide §9): a single fixed, non-interactive, decorative layer at
+     ~3% opacity. Subtle enough that data stays crisp; aria-hidden and zeroed under reduced motion. */
+  .scanlines {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    pointer-events: none;
+    opacity: var(--scanline-opacity);
+    background-image: repeating-linear-gradient(
+      to bottom,
+      rgba(51, 255, 0, 0.35) 0px,
+      rgba(51, 255, 0, 0.35) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+  }
+}
+
+@keyframes blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-blink,
+  .animate-typing,
+  .animate-glitch,
+  .scanlines {
+    animation: none;
+  }
+
+  .scanlines {
+    opacity: 0;
+  }
+}

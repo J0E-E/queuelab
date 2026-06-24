@@ -1296,7 +1296,7 @@ explicit and acyclic.
     `DockerControl.kill_worker` (Epic 11b code) — optional now the trust-boundary check closes the
     reachable path; revisit if another control publisher is added.
 
-## Epic 13 — Frontend foundation & style-guide primitives
+## Epic 13 — Frontend foundation & style-guide primitives [UI] — **COMPLETED** (19m)
 - **Intent:** The Terminal CLI frontend shell with design tokens and the primitive
   component set, before any live wiring.
 - **Scope:** `frontend/` Vite + React + TS + Tailwind; tokens mapped 1:1 from the
@@ -1308,6 +1308,44 @@ explicit and acyclic.
 - **Verification:** `vite build` succeeds; Storybook/dev page renders each primitive
   in dark theme; Vitest green; reduced-motion respected; ids present.
 - **Depends on:** Epic 1 (can proceed in parallel with backend epics).
+- **Open questions / decisions for stakeholders:** none — resolved at plan time. All visual/
+  aesthetic decisions are locked by `.development-docs/ui-ux-style-guide.md` (the Guide wins);
+  only the toolchain choices below were open, each with a clear recommendation.
+- **Plan-time decisions (13):**
+  - **Stack = Vite + React 18 + TypeScript + Tailwind v3.4.** Tailwind **v3** (not v4) because the
+    Guide §13 prescribes the v3 idiom (`theme.extend.colors`, `borderRadius.DEFAULT: '0px'`); v4's
+    CSS-first config would diverge from the Guide's stated reference.
+  - **Tokens: CSS custom properties are the single source of truth.** The Guide §13 `:root` block
+    (colors, type scale, radius/border, effects, keyframes, the reduced-motion query) is
+    transcribed **verbatim** into one global stylesheet; the Tailwind theme only maps utility names
+    to `var(--token)` so a hex is never hardcoded in a component (the Guide's rule).
+  - **Font self-hosted via `@fontsource/jetbrains-mono`** (weights 400/500/700) — no external
+    runtime/CDN dependency, works offline, in tests, and on the single-EC2 deploy.
+  - **Tests = Vitest + @testing-library/react + jsdom** (a setup file wires jest-dom matchers); the
+    "renders each primitive" check is a **dev showcase page** (App renders every primitive in a
+    gallery), not Storybook — lighter, no extra heavy dep, satisfies the verification.
+  - **Lucide deferred.** The Guide §10 prefers ASCII/Unicode glyphs and the primitives need no drawn
+    icons, so `lucide-react` is not added until a later epic's component actually needs one.
+  - **Build strategy = walking skeleton:** Phase 1 wires the whole toolchain (Vite/React/TS/Tailwind/
+    Vitest) + tokens + one trivial primitive rendering end-to-end (proves build·lint·test green),
+    then Phases 2–3 flesh out the primitive set and the effects layer onto the proven harness.
+- **Implementation notes:**
+  - **Frontend toolchain baseline (Epics 14–16):** Vite + React 18 + TS + Tailwind v3, tokens as CSS
+    custom properties in one global stylesheet (Guide §13, the single source of truth — never
+    hardcode a hex), JetBrains Mono self-hosted via `@fontsource`, Vitest + Testing Library + jsdom.
+    The primitives (`Pane`, `PaneTitle`, `Prompt`, `BracketButton`, `StatusBadge`, `AsciiBar`,
+    `Sparkline`, `Counter`, `FeedLine`, `WorkerCell`) are the component vocabulary later screens
+    compose from. No router yet — routing lands when the first multi-page need does (Epic 16).
+  - **Frontend green gate (Epics 14–17 / CI):** run in `frontend/` — `npm run build`
+    (`tsc --noEmit && vite build`), `npm run test:run` (vitest), `npm run lint` (eslint),
+    `npm run format:check` (prettier). The `Scanlines` overlay is mounted once at the app root and
+    is `aria-hidden`; the `StatusBadge`/`WorkerCell` state→{glyph,code,color} maps mirror the
+    backend `JobState` vocabulary, so keep them in sync as states evolve.
+  - **Deferred nits (review-surfaced, for Epic 14):** (1) the guest-handle palette is a hardcoded
+    hex map in `FeedLine.tsx` — the one spot escaping the "no hex in a component" rule (the Guide
+    §3.4 colors have no `:root` token home); promote to CSS tokens / `colors.guest.*` for
+    consistency. (2) only each primitive's root carries an `id`; add a jsx id-required ESLint rule
+    when screens compose the primitives so the "every element gets an id" rule is enforced.
 
 ## Epic 14 — Live state hook & dashboard panes
 - **Intent:** The live multiplayer dashboard — connect the WS, reduce deltas, and
