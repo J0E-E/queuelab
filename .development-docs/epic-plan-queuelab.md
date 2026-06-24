@@ -1433,7 +1433,7 @@ explicit and acyclic.
     body}]}`; the explainer pages (Epic 16) may reuse the same content module rather than duplicating
     the copy.
 
-## Epic 16 — Explainer pages (How It Works & How I Work)
+## Epic 16 — Explainer pages (How It Works & How I Work) [UI] — **COMPLETED** (5m)
 - **Intent:** Two static, narrative explainer pages that earn credibility for the
   product and the builder, per §5.11.
 - **Scope:** Routing for `/how-it-works` and `/how-i-work`; static narrative content
@@ -1443,6 +1443,29 @@ explicit and acyclic.
 - **Verification:** Both pages reachable from the header, render the narrative in the
   Terminal CLI system, contain the closing payoff sections; ids present.
 - **Depends on:** Epic 13.
+- **Open questions / decisions for stakeholders:** none — resolved at plan time.
+- **Plan-time decisions (16):**
+  - **Router = `react-router-dom` v6** (the routing deferred from Epic 14). Routes: `/` (the
+    dashboard), `/how-it-works`, `/how-i-work`. A `Layout` owns the global chrome (the `Scanlines`
+    overlay + a `<header><nav>` with links) and renders the active route via `<Outlet>`.
+  - **App restructure:** the Epic 14 dashboard body moves into `pages/Dashboard.tsx`; `App.tsx`
+    becomes the `BrowserRouter` + `Layout` + `Routes`. `Scanlines` and the title/guest header move
+    from the old App into `Layout` (mounted once for every route).
+  - **Pages are static narrative** (`pages/HowItWorks.tsx`, `pages/HowIWork.tsx`), composed from the
+    Epic 13 primitives (`Pane`/`PaneTitle`), Terminal-CLI voiced, with real landmarks
+    (`<main>`/headings), ids on every element, and reduced-motion inherited from the global CSS. No
+    WebSocket/live state. Closing payoff sections: the scaling story / review-loop + the
+    git-history proof point.
+  - **Navigation tests = Vitest + `MemoryRouter`** (render at a path, assert the page; click a header
+    link, assert the route changes). **Playwright is deferred to Epic 17** (the narrative E2E lives
+    there), so this epic adds no browser-driver setup.
+- **Implementation notes:**
+  - **Routing baseline (Epic 17 E2E / Epic 19 nginx):** `react-router-dom` v6 with routes `/`,
+    `/how-it-works`, `/how-i-work`; client-side routing means nginx must serve `index.html` for all
+    non-asset paths (SPA fallback, Epic 19). `Layout` holds the global `Scanlines` + header nav.
+  - **Deferred UI nits (review-surfaced):** the two explainer pages share an identical
+    section-map shape — extract a shared `NarrativePage` to DRY them; the active NavLink uses an
+    underline where the Guide leans on inverted/brightened active state (§7.1/§12).
 
 ## Epic 17 — Test suites wired into CI
 - **Intent:** Portfolio-grade, gated test coverage across the stack.

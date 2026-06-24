@@ -1,8 +1,7 @@
-import { render } from '@testing-library/react';
+import { fireEvent, render } from '@testing-library/react';
 
-// The App is wiring: mock the data hooks so the dashboard renders without a real WebSocket/fetch
-// (jsdom has neither). The reducer, panes, and lib are covered by their own tests. The state is an
-// inline literal — a vi.mock factory must not reference hoisted imports.
+// The dashboard route pulls live data; mock its hooks so App renders without a real WebSocket/fetch
+// (jsdom has neither). The reducer, panes, and pages are covered by their own tests.
 vi.mock('./hooks/useSession', () => ({
   useSession: () => ({ session_id: 's', guest_handle: 'guest-teal', color: '#2dd4bf' }),
 }));
@@ -26,17 +25,23 @@ vi.mock('./hooks/useArchitecture', () => ({
 
 import { App } from './App';
 
-describe('App dashboard', () => {
-  it('renders the dashboard panes wired to the live state', () => {
+describe('App routing', () => {
+  it('renders the dashboard at / with the nav', () => {
     render(<App />);
-    expect(document.getElementById('scanlines-overlay')).toBeInTheDocument();
-    expect(document.getElementById('app-guest')).toHaveTextContent('guest-teal');
+    expect(document.getElementById('dashboard-guest')).toHaveTextContent('guest-teal');
     expect(document.getElementById('metric-queue-depth')).toHaveTextContent('0012');
-    expect(document.getElementById('workers-pane')).toBeInTheDocument();
-    expect(document.getElementById('submit-form')).toBeInTheDocument();
-    expect(document.getElementById('feed-line-0')).toHaveTextContent('worker-1 started job#1');
-    expect(document.getElementById('architecture-section-queue')).toHaveTextContent(
-      'Custom Redis queue',
-    );
+    expect(document.getElementById('nav-link-how-it-works')).toBeInTheDocument();
+  });
+
+  it('navigates to the explainer pages from the header', () => {
+    render(<App />);
+    fireEvent.click(document.getElementById('nav-link-how-it-works') as HTMLElement);
+    expect(document.getElementById('how-it-works')).toBeInTheDocument();
+
+    fireEvent.click(document.getElementById('nav-link-how-i-work') as HTMLElement);
+    expect(document.getElementById('how-i-work')).toBeInTheDocument();
+
+    fireEvent.click(document.getElementById('nav-link-dashboard') as HTMLElement);
+    expect(document.getElementById('dashboard')).toBeInTheDocument();
   });
 });
