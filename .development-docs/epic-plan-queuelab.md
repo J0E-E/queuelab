@@ -1347,7 +1347,7 @@ explicit and acyclic.
     consistency. (2) only each primitive's root carries an `id`; add a jsx id-required ESLint rule
     when screens compose the primitives so the "every element gets an id" rule is enforced.
 
-## Epic 14 — Live state hook & dashboard panes
+## Epic 14 — Live state hook & dashboard panes [UI] — **COMPLETED** (17m)
 - **Intent:** The live multiplayer dashboard — connect the WS, reduce deltas, and
   render the panes that make the mechanics visible.
 - **Scope:** `frontend/src/hooks/` (`useLiveState` WS hook, `useSession`,
@@ -1360,6 +1360,52 @@ explicit and acyclic.
   assigned, submit a batch → counts/feed/grid update live; destroy a worker → grid
   shows recovery; Vitest reducer tests green.
 - **Depends on:** Epic 12, Epic 13.
+- **Open questions / decisions for stakeholders:** none — resolved at plan time (visual choices
+  locked by the style guide; the contract gaps below resolved against the existing backend surface).
+- **Plan-time decisions (14):**
+  - **WS frame contract (from the backend, read at plan time):** `snapshot` on connect
+    (`{counts, jobs[], activity[]}`), then `delta` (`{event:{job_id,state,…}}`), `metrics`
+    (`{counts, queue_depth, worker_count}`), and `activity` (`{line}`) frames. The reducer keeps
+    `jobs` as an **active-only** map: a `delta` with a terminal state (`completed`/`failed`) removes
+    the job (matching the backend `active_jobs` projection); counts/cumulative come from
+    `snapshot`/`metrics`.
+  - **WS client = native `WebSocket` + capped exponential-backoff reconnect** (1s→10s), JSON frame
+    parsing. Dev uses **relative `/ws` + `/api`** through a **Vite dev proxy** to `localhost:8000`
+    (added to `vite.config.ts`); prod serves same-origin behind nginx (Epic 19).
+  - **Worker grid is derived (no per-worker WS frame exists).** Cells are sized to
+    `metrics.worker_count`; workers running an in-flight job are shown `running` with their id
+    (from the jobs map), the remainder `idle` (anonymous). Destroy of a *named* running worker uses
+    its id; the generic "break something" button sends no `worker_id` and lets the API pick. *A
+    richer grid (idle worker ids, spawning cells) needs a backend `workers` frame — deferred to a
+    later backend enhancement, out of this frontend epic's scope.*
+  - **Scaling is via the config API, not a scale endpoint.** No HTTP endpoint publishes
+    `scale_up`/`scale_down` on `ql:control`, so the WorkersPane scale control **nudges `min_workers`
+    via `PUT /api/config`** (raise = scale the floor up, lower = down) — the autoscaler reacts within
+    a tick. Destroy → `POST /api/chaos/destroy-worker`; inject-failures → `POST /api/chaos/inject-failures`.
+    *(A dedicated one-shot manual-scale HTTP endpoint publishing on `ql:control` was considered and
+    deferred — adjusting the floor via the existing config API gives visible scaling with no backend
+    change.)*
+  - **Submit form** → `POST /api/jobs {session_id,count,type,complexity,max_retries,retry_delay_ms}`;
+    a `422` renders its `[ERR]` body inline beneath the offending flag (Guide §7.3).
+  - **ARIA:** `aria-live="polite"` on the activity feed and the live counters so a screen reader
+    hears the system update (Guide §12).
+  - **Build strategy = walking skeleton:** Phase 1 wires the lib + reducer + hooks (state flows end
+    to end, reducer unit-tested) before any pane; Phases 2–3 render the panes and the dashboard
+    layout onto the proven state.
+- **Implementation notes:**
+  - **Frontend↔backend contract (Epic 19 deploy / nginx):** the app talks to the backend over
+    same-origin `/api` (REST) and `/ws` (WebSocket); dev uses a Vite proxy to `localhost:8000`, prod
+    needs nginx to route `/api` and upgrade `/ws` (Epic 19). The WS frame types the dashboard reduces
+    are `snapshot` / `delta` / `metrics` / `activity`.
+  - **Deferred backend enhancements (surfaced by Epic 14):** (1) a per-worker `workers` WS frame (or
+    `GET /api/workers`) for a richer grid; (2) a one-shot manual-scale HTTP endpoint publishing
+    `scale_up`/`scale_down` on `ql:control`. Neither blocks the narrative — the grid derives from
+    `worker_count` and scaling uses `PUT /api/config`.
+  - **Deferred UI nits (review-surfaced, polish pass):** (1) `SubmitPane` uses bordered inputs —
+    Guide §7.3 wants prompt-style inline fields ("no boxy field"); (2) chaos/scale handlers swallow
+    `409`/`429` silently — add a system-voice toast (Guide §7.7); (3) seed `queueDepth` from the
+    snapshot's `counts.queued` so it isn't `0` for the first ~1s; (4) add a mock-`WebSocket` unit
+    test for `lib/ws.ts` reconnect/backoff (the reducer + panes are covered).
 
 ## Epic 15 — In-context architecture content & endpoint
 - **Intent:** Surface the explanatory architecture notes where the visitor is looking.

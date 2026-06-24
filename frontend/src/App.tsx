@@ -1,103 +1,96 @@
-import { AsciiBar } from './components/AsciiBar';
-import { BracketButton } from './components/BracketButton';
-import { Counter } from './components/Counter';
-import { FeedLine } from './components/FeedLine';
-import { Pane } from './components/Pane';
-import { PaneTitle } from './components/PaneTitle';
-import { Prompt } from './components/Prompt';
+import { destroyWorker, injectFailures, updateConfig } from './lib/api';
 import { Scanlines } from './components/Scanlines';
-import { Sparkline } from './components/Sparkline';
-import { StatusBadge, type JobState } from './components/StatusBadge';
-import { WorkerCell, type WorkerStatus } from './components/WorkerCell';
+import { deriveWorkers } from './hooks/liveState';
+import { useLiveState } from './hooks/useLiveState';
+import { useSession } from './hooks/useSession';
+import { useSubmitJobs } from './hooks/useSubmitJobs';
+import { FeedPane } from './panes/FeedPane';
+import { MetricsPane } from './panes/MetricsPane';
+import { QueueDepthPane } from './panes/QueueDepthPane';
+import { SubmitPane, type SubmitFields } from './panes/SubmitPane';
+import { WorkersPane } from './panes/WorkersPane';
 
-const JOB_STATES: JobState[] = ['queued', 'running', 'completed', 'failed', 'retrying'];
-const WORKER_GRID: { id: string; status: WorkerStatus; workerId: string }[] = [
-  { id: 'worker-cell-1', status: 'running', workerId: 'worker-1' },
-  { id: 'worker-cell-2', status: 'running', workerId: 'worker-2' },
-  { id: 'worker-cell-3', status: 'idle', workerId: 'worker-3' },
-  { id: 'worker-cell-4', status: 'spawning', workerId: 'worker-4' },
-  { id: 'worker-cell-5', status: 'destroyed', workerId: 'worker-5' },
-];
+const CHAOS_BIAS = 0.5;
 
 /**
- * The Epic 13 primitive showcase: every style-guide primitive rendered once in the Terminal-CLI
- * theme, so the foundation can be eyeballed in the dark theme. The live dashboard replaces this in
- * Epic 14.
+ * The live QueueLab dashboard: a tmux-style grid of panes driven by the WebSocket state, with the
+ * submit / scale / destroy / chaos controls wired to the backend. Each pane owns one concern
+ * (Guide §2 "one pane, one job").
  */
 export function App() {
+  const identity = useSession();
+  const state = useLiveState();
+  const { submit, isSubmitting, error, accepted } = useSubmitJobs();
+  const sessionId = identity?.session_id;
+  const workers = deriveWorkers(state);
+
+  function handleSubmit(fields: SubmitFields) {
+    if (!sessionId) return;
+    void submit({ session_id: sessionId, ...fields });
+  }
+
+  function handleDestroy(workerId?: string) {
+    if (!sessionId) return;
+    // Best-effort: the outcome shows up in the feed/grid; a rejection is swallowed.
+    void destroyWorker(sessionId, workerId).catch(() => undefined);
+  }
+
+  function handleInjectFailures() {
+    if (!sessionId) return;
+    void injectFailures(sessionId, CHAOS_BIAS).catch(() => undefined);
+  }
+
+  // Scaling nudges the autoscaler floor relative to the running fleet (no manual-scale endpoint).
+  function handleScaleUp() {
+    void updateConfig({ min_workers: state.workerCount + 1 }).catch(() => undefined);
+  }
+
+  function handleScaleDown() {
+    void updateConfig({ min_workers: Math.max(0, state.workerCount - 1) }).catch(() => undefined);
+  }
+
   return (
     <>
       <Scanlines />
-      <main id="app-main" className="mx-auto max-w-4xl space-y-6 p-6">
-        <header id="app-header" className="glow text-lg uppercase tracking-[0.02em] text-fg">
-          [ QUEUELAB · primitive showcase ]
+      <main id="app-main" className="mx-auto max-w-6xl space-y-6 p-6">
+        <header
+          id="app-header"
+          className="flex items-center justify-between border border-solid border-muted bg-bg-invert px-3 py-1 text-bg"
+        >
+          <span id="app-title" className="uppercase tracking-[0.02em]">
+            [ QUEUELAB ]
+          </span>
+          <span id="app-guest" className="text-sm">
+            {identity ? identity.guest_handle : 'connecting…'}
+          </span>
         </header>
 
-        <Pane id="metrics-pane" isActive>
-          <PaneTitle id="metrics-title" title="data viz" chip="● live" />
-          <div id="metrics-body" className="space-y-3 pt-3">
-            <div id="counters-row" className="flex gap-8">
-              <Counter id="queue-depth-counter" value={142} delta={12} pad={4} label="queued" />
-              <Counter id="worker-count-counter" value={8} label="workers" />
-            </div>
-            <AsciiBar id="capacity-bar" value={0.62} width={24} state="running" />
-            <Sparkline id="depth-sparkline" values={[2, 5, 9, 14, 11, 7, 4, 3]} />
-          </div>
-        </Pane>
+        <MetricsPane
+          counts={state.counts}
+          queueDepth={state.queueDepth}
+          workerCount={state.workerCount}
+          isConnected={state.isConnected}
+        />
 
-        <Pane id="states-pane">
-          <PaneTitle id="states-title" title="job states" />
-          <div id="states-row" className="flex flex-wrap gap-4 pt-3">
-            {JOB_STATES.map((state) => (
-              <StatusBadge key={state} id={`badge-${state}`} state={state} />
-            ))}
-          </div>
-        </Pane>
-
-        <Pane id="workers-pane">
-          <PaneTitle id="workers-title" title="workers" />
-          <div id="worker-grid" className="flex gap-3 pt-3 text-lg">
-            {WORKER_GRID.map((cell) => (
-              <WorkerCell
-                key={cell.id}
-                id={cell.id}
-                status={cell.status}
-                workerId={cell.workerId}
-              />
-            ))}
-          </div>
-        </Pane>
-
-        <Pane id="controls-pane">
-          <PaneTitle id="controls-title" title="controls" />
-          <div id="controls-row" className="flex flex-wrap items-center gap-4 pt-3">
-            <BracketButton id="scale-button">+ scale up</BracketButton>
-            <BracketButton id="destroy-button" variant="destructive">
-              destroy worker
-            </BracketButton>
-            <BracketButton id="disabled-button" isDisabled>
-              execute
-            </BracketButton>
-          </div>
-          <div id="prompt-row" className="pt-3">
-            <Prompt id="submit-prompt" user="guest-amber" hasCursor />
-          </div>
-        </Pane>
-
-        <Pane id="feed-pane">
-          <PaneTitle id="feed-title" title="activity feed" />
-          <div id="feed-body" className="space-y-1 pt-3">
-            <FeedLine id="feed-line-1" time="12:04:02" handle="guest-teal">
-              submitted +50 jobs
-            </FeedLine>
-            <FeedLine id="feed-line-2" time="12:04:05" handle="guest-amber">
-              destroyed worker-3
-            </FeedLine>
-            <FeedLine id="feed-line-3" time="12:04:06" handle="sys">
-              scaled up to 4 workers
-            </FeedLine>
-          </div>
-        </Pane>
+        <div id="dashboard-grid" className="grid gap-6 lg:grid-cols-2">
+          <QueueDepthPane counts={state.counts} depthHistory={state.depthHistory} />
+          <WorkersPane
+            workers={workers}
+            onScaleUp={handleScaleUp}
+            onScaleDown={handleScaleDown}
+            onDestroy={handleDestroy}
+            onInjectFailures={handleInjectFailures}
+          />
+          <SubmitPane
+            guestHandle={identity?.guest_handle}
+            onSubmit={handleSubmit}
+            isSubmitting={isSubmitting}
+            error={error}
+            accepted={accepted}
+            isDisabled={!sessionId}
+          />
+          <FeedPane lines={state.feed} />
+        </div>
       </main>
     </>
   );
