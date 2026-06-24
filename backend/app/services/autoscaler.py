@@ -26,11 +26,12 @@ from app.config import Settings
 class ScalingDecision:
     """One scaling action and the reason for it — the pure output of :func:`decide_scaling`.
 
-    ``action`` is one of ``"scale_up" | "scale_down" | "replace" | "no-op"``; the first three
-    mirror the ``ScalingEvent`` vocabulary so Epic 11c can record the decision directly, while
-    ``"no-op"`` is the do-nothing result that is never written as a row. ``count`` is how many
-    workers to add (set only for ``scale_up``); ``worker_id`` names the worker a ``scale_down``
-    or ``replace`` targets (``None`` for fleet-level actions).
+    ``action`` is one of ``"scale_up" | "scale_down" | "replace" | "destroy" | "no-op"``; the
+    first three are produced by :func:`decide_scaling` and mirror the ``ScalingEvent`` vocabulary,
+    ``"destroy"`` is the chaos hard-kill (Epic 12, only ever built from a manual command, never by
+    the policy), and ``"no-op"`` is the do-nothing result that is never written as a row. ``count``
+    is how many workers to add (set only for ``scale_up``); ``worker_id`` names the worker a
+    ``scale_down``, ``replace``, or ``destroy`` targets (``None`` for fleet-level actions).
     """
 
     action: str

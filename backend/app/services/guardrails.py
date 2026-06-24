@@ -12,6 +12,7 @@ Status mapping:
 - :class:`InvalidSubmissionError` → ``422`` (the batch fails validation, e.g. > 100 or < 1).
 - :class:`RateLimitedError`       → ``429`` with a ``Retry-After`` header (acting too fast).
 - :class:`QueueFullError`         → ``409`` (the shared queue is at capacity).
+- :class:`NoWorkersError`         → ``409`` (chaos destroy-worker with an empty fleet, Epic 12).
 """
 
 from __future__ import annotations
@@ -52,6 +53,17 @@ class RateLimitedError(Exception):
         self.message = message
 
 
+class NoWorkersError(Exception):
+    """Chaos destroy-worker was asked to break a worker but the fleet is empty, giving a 409.
+
+    Carries an already-shaped system-voice ``message`` (e.g. ``[WARN] no workers to destroy``).
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
 async def _handle_invalid_submission(
     request: Request, error: InvalidSubmissionError
 ) -> JSONResponse:
@@ -78,6 +90,11 @@ async def _handle_queue_full(request: Request, error: QueueFullError) -> JSONRes
     return JSONResponse(status_code=409, content={"detail": QUEUE_AT_CAPACITY_MESSAGE})
 
 
+async def _handle_no_workers(request: Request, error: NoWorkersError) -> JSONResponse:
+    """Shape a chaos destroy against an empty fleet as ``409`` with the system-voice message."""
+    return JSONResponse(status_code=409, content={"detail": error.message})
+
+
 def register_guardrail_handlers(app: FastAPI) -> None:
     """Wire the guardrail errors to their HTTP responses on the app.
 
@@ -88,3 +105,4 @@ def register_guardrail_handlers(app: FastAPI) -> None:
     app.add_exception_handler(InvalidSubmissionError, _handle_invalid_submission)
     app.add_exception_handler(RateLimitedError, _handle_rate_limited)
     app.add_exception_handler(QueueFullError, _handle_queue_full)
+    app.add_exception_handler(NoWorkersError, _handle_no_workers)

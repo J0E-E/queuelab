@@ -23,6 +23,7 @@ from redis.commands.core import AsyncScript
 from app.config import settings
 
 from .protocol import (
+    CHAOS_FAILURE_BIAS_KEY,
     CONFIG_KEY,
     CONTROL_CHANNEL,
     COUNT_FIELDS,
@@ -298,6 +299,22 @@ class JobQueue:
         if not overrides:
             return
         await self._redis.hset(CONFIG_KEY, mapping=overrides)
+
+    # ---- Chaos failure-bias (Epic 12) --------------------------------------------
+
+    async def set_failure_bias(self, bias: float, *, ttl_seconds: int) -> None:
+        """Set the live chaos failure-bias with a TTL, so the injected failures self-expire.
+
+        ``bias`` is added to every simulated job's failure probability while the key lives. Stored
+        with ``ql:chaos:failure_bias`` and an expiry (one ``SET … EX``) so a "make jobs fail" burst
+        decays back to normal on its own without a turn-it-off call. Callers validate the range.
+        """
+        await self._redis.set(CHAOS_FAILURE_BIAS_KEY, bias, ex=ttl_seconds)
+
+    async def get_failure_bias(self) -> float:
+        """Return the live chaos failure-bias, or ``0.0`` when none is set (or it has expired)."""
+        raw = await self._redis.get(CHAOS_FAILURE_BIAS_KEY)
+        return float(raw) if raw is not None else 0.0
 
     # ---- Recovery (used by the reaper loop, Epic 9) ------------------------------
 

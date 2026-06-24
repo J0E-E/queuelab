@@ -68,6 +68,8 @@ def format_scaling_line(event: dict[str, Any]) -> str:
         return f"scaled down to {_workers_phrase(worker_count_after)}{suffix}"
     if action == "replace":
         return f"replaced {event.get('worker_id') or 'a worker'}{suffix}"
+    if action == "destroy":
+        return f"destroyed {event.get('worker_id') or 'a worker'}{suffix}"
     return f"{action or 'scaling'}{suffix}"
 
 

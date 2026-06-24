@@ -64,6 +64,12 @@ CONTROL_CHANNEL = "ql:control"
 # runtime via ``PUT /api/config`` without a redeploy.
 CONFIG_KEY = "ql:config"
 
+# Redis key holding the live chaos failure-bias (Epic 12) — a float added to every simulated job's
+# failure probability. The chaos endpoint writes it with a TTL so the "make jobs fail" burst decays
+# on its own; each worker reads it per job and feeds it to ``simulated_job_succeeds``. An
+# absent/expired key means no bias (normal failure rates).
+CHAOS_FAILURE_BIAS_KEY = "ql:chaos:failure_bias"
+
 
 def job_key(job_id: str) -> str:
     """Return the Redis Hash key holding the full record for ``job_id``."""

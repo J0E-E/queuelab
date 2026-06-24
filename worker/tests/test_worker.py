@@ -108,6 +108,26 @@ async def test_worker_marks_a_failing_job_failed_when_retries_exhausted(
     assert await redis_client.lrange(processing_key(worker_id), 0, -1) == []
 
 
+async def test_injected_failure_bias_forces_an_otherwise_passing_job_to_fail(
+    queue, redis_client, make_job
+):
+    """A live chaos failure-bias pushes a would-pass job (draw 0.5 ≥ base rate) to ``failed``."""
+    worker_id = "worker-test"
+    # A full bias clamps every job's failure probability to 1.0, so even a mid-range pass/fail
+    # draw (which clears the ~2-25% base rates) now fails.
+    await queue.set_failure_bias(1.0, ttl_seconds=30)
+    batch = [make_job(max_retries=0) for _ in range(3)]
+    for job in batch:
+        await queue.enqueue(job)
+
+    would_pass_unbiased = FixedRandom(draw_value=0.5)
+    await run_worker(queue, worker_id, poll_timeout=0.2, max_idle_polls=1, rng=would_pass_unbiased)
+
+    assert (await queue.counts())["failed"] == 3
+    for job in batch:
+        assert await redis_client.hget(job_key(job.id), "state") == "failed"
+
+
 async def test_worker_survives_a_malformed_job(queue, redis_client, make_job):
     """An unrunnable job is nacked, not crashed on; the worker keeps draining the rest."""
     worker_id = "worker-test"

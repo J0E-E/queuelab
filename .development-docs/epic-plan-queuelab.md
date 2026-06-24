@@ -1236,7 +1236,7 @@ explicit and acyclic.
     posture; if it bites, clamp the overridden `max_workers` to the env-provisioned value (API may
     lower the live cap, not raise it).
 
-## Epic 12 — Chaos endpoints
+## Epic 12 — Chaos endpoints — **COMPLETED** (20m)
 - **Intent:** Destroy-worker and inject-failures, wired through the autoscaler and
   reflected in the feed/grid — the "break it on purpose" mechanic.
 - **Scope:** `backend/app/services/chaos.py`, `POST /api/chaos/destroy-worker`,
@@ -1248,6 +1248,53 @@ explicit and acyclic.
   reaper requeues job, autoscaler may replace; inject-failures biases outcomes toward
   `failed`; rate limit returns 429.
 - **Depends on:** Epic 11d-2.
+- **Open questions / decisions for stakeholders:** none — resolved at plan time.
+- **Plan-time decisions (12):**
+  - **Destroy goes through `ql:control` (only the autoscaler holds the Docker socket).** The api
+    process has no `DockerControl`, so `POST /api/chaos/destroy-worker` publishes
+    `{"command":"destroy","worker_id":X}` on `ql:control`; the autoscaler's control consumer maps
+    it via `_command_to_decision` and runs it through the shared `_apply_decision` — reusing the
+    11d-1 clamp/audit/feed tail so chaos, manual, and automatic paths can't drift.
+  - **`destroy` is a new `ScalingDecision` action = hard kill *without* deregister.** Unlike
+    graceful `scale_down` (an idle worker, `kill_worker` + `deregister`), `destroy` force-removes a
+    chosen (possibly busy) worker and **leaves** its `ql:workers` entry, so its in-flight job's
+    lease lapses → the reaper requeues it (Epic 9) and the next tick's `replace` (stale heartbeat)
+    stands up a fresh worker. This is what makes "break a worker → it recovers" real.
+  - **Target selection.** Body is `{session_id, worker_id?}`; the api reads `ql:workers` and uses
+    the given `worker_id` (the frontend grid click, Epic 14) or picks one live worker at random
+    (the generic "break something" button). No live workers → `409` `[WARN] no workers to destroy`.
+  - **inject-failures = a TTL'd Redis key workers read per job (NOT `ql:control`).** Workers don't
+    subscribe to `ql:control`, so `POST /api/chaos/inject-failures` writes
+    `ql:chaos:failure_bias` (a float) with a TTL (new `chaos_failure_ttl_seconds`, default 30) so
+    chaos self-expires back to normal. The worker reads it each job via
+    `JobQueue.get_failure_bias()` and passes it to `simulated_job_succeeds(failure_bias=...)`
+    (the Epic 8a seam). Bias is validated `0..1` (`422` `[ERR]` otherwise).
+  - **Destroyed-vs-scaled-down "marking" = the audit row + feed line.** A destroyed container is
+    removed, so the durable mark is the `scaling_event` (`action="destroy"`, `reason="chaos:
+    destroy <id>"`) and its feed line (via `format_scaling_line`), distinct from a `scale_down`.
+    The grid renders the visual difference (Epic 14) off that distinction — no Docker label.
+  - **Identity / rate limit.** Both endpoints carry `session_id` and are throttled 1/10s through
+    the existing `RateLimiter.check_chaos(session_id)`; a denial is `429` with `Retry-After`.
+- **Implementation notes:**
+  - **Cross-epic contract (Epic 14 frontend):** destroy button → `POST /api/chaos/destroy-worker`
+    `{session_id, worker_id}`; chaos button → `POST /api/chaos/inject-failures` `{session_id, bias}`.
+    The scaling feed now carries a `destroy` action (distinct from `scale_down`) so the grid can
+    show a destroyed worker differently from a scaled-down one.
+  - **New `ScalingDecision` action `destroy`** in `app/services/autoscaler.py` (carried out in
+    `_carry_out_decision` as hard-kill-without-deregister) and rendered by
+    `app/services/activity_feed.py::format_scaling_line` — any later scaling path must keep both in
+    sync. (Adding the `destroy` branch updated an existing `test_realtime_scaling_feed.py` case that
+    had used `"destroy"` as its *unknown-action* example — the full-suite commit hook caught it.)
+  - **New `NoWorkersError` → 409** in `app/services/guardrails.py` (system voice `[WARN] no workers
+    to destroy`); Epic 14 surfaces it when the destroy button is hit with an empty fleet — and now
+    also when the named target isn't a registered worker.
+  - **Review fix (12 — security):** `destroy_worker` now validates a supplied `worker_id` against
+    `ql:workers` before publishing (rejects with `409` otherwise). Without it, `kill_worker`
+    removes a container by name with no label filter, so an unauthenticated
+    `POST /api/chaos/destroy-worker {"worker_id":"postgres"}` could destroy core infra. *Deferred
+    (defer-to-note):* a defense-in-depth `com.queuelab.role=worker` label filter inside
+    `DockerControl.kill_worker` (Epic 11b code) — optional now the trust-boundary check closes the
+    reachable path; revisit if another control publisher is added.
 
 ## Epic 13 — Frontend foundation & style-guide primitives
 - **Intent:** The Terminal CLI frontend shell with design tokens and the primitive

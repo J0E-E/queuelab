@@ -56,9 +56,16 @@ def test_replace_line_names_the_worker():
     assert line == "replaced worker-stale — heartbeat stale"
 
 
+def test_destroy_action_renders_distinctly_from_scale_down():
+    # Chaos destroy (Epic 12) reads differently from a graceful scale_down, so the grid can tell
+    # a destroyed worker from one trimmed for idleness.
+    line = format_scaling_line({"action": "destroy", "worker_id": "worker-1", "reason": "chaos"})
+    assert line == "destroyed worker-1 — chaos"
+
+
 def test_unknown_action_still_yields_a_sensible_line():
     # Nothing is ever dropped — an unrecognized action falls back to a plain label.
-    assert format_scaling_line({"action": "destroy", "reason": "chaos"}) == "destroy — chaos"
+    assert format_scaling_line({"action": "frobnicate", "reason": "chaos"}) == "frobnicate — chaos"
     assert format_scaling_line({}) == "scaling"
 
 

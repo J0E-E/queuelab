@@ -122,6 +122,43 @@ class MetricsResponse(BaseModel):
     worker_count: int
 
 
+class InjectFailuresRequest(BaseModel):
+    """The body for ``POST /api/chaos/inject-failures`` (Epic 12).
+
+    ``session_id`` keys the per-session chaos rate limit (the same throttle as a submission).
+    ``bias`` is added to every simulated job's failure probability while the injection lives; a
+    value outside ``0..1`` is rejected by the chaos service in the system voice.
+    """
+
+    session_id: str
+    bias: float
+
+
+class InjectFailuresResponse(BaseModel):
+    """The body returned after a failure injection: the bias set and how long it lasts."""
+
+    bias: float
+    ttl_seconds: int
+
+
+class DestroyWorkerRequest(BaseModel):
+    """The body for ``POST /api/chaos/destroy-worker`` (Epic 12).
+
+    ``session_id`` keys the per-session chaos rate limit. ``worker_id`` is optional: the frontend
+    grid passes the worker the operator clicked, while the generic "break something" button omits
+    it and lets the api pick a live worker at random.
+    """
+
+    session_id: str
+    worker_id: str | None = None
+
+
+class DestroyWorkerResponse(BaseModel):
+    """The body returned after a destroy is dispatched: which worker was targeted."""
+
+    worker_id: str
+
+
 class AutoscalerConfig(BaseModel):
     """The autoscaler thresholds in force, returned by ``GET /api/config`` (Epic 11d-2).
 

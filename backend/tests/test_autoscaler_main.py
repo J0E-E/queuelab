@@ -388,6 +388,31 @@ async def _settled(condition: bool) -> bool:
 # ---- Edge cases: clamp, malformed/unknown, gone worker (handler driven directly) -------
 
 
+async def test_control_destroy_kills_without_deregister(queue, redis_client, database):
+    docker_control = FakeDockerControl()
+    await _seed_worker(queue, "worker-1")
+    await _seed_worker(queue, "worker-2")
+
+    await _handle_control_command(
+        {"data": '{"command":"destroy","worker_id":"worker-1"}'},
+        queue,
+        docker_control,
+        database,
+        settings=settings,
+    )
+
+    # The container is hard-killed, but its registry entry is left stale on purpose: that is what
+    # lets the reaper recover its in-flight job and the next tick's replace stand a fresh worker up.
+    assert docker_control.killed == ["worker-1"]
+    assert docker_control.started == 0
+    assert set((await queue.list_workers()).keys()) == {"worker-1", "worker-2"}
+    (event,) = await _scaling_events(database)
+    assert event.action == "destroy"
+    assert event.worker_id == "worker-1"
+    assert event.reason == "chaos: destroy worker-1"
+    assert event.worker_count_after == 1  # two workers minus the destroyed one
+
+
 async def test_control_scale_up_over_cap_is_clamped_to_max_workers(queue, redis_client, database):
     docker_control = FakeDockerControl()
     over_cap = settings.max_workers + 5

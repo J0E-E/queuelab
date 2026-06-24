@@ -73,6 +73,12 @@ class Settings(BaseSettings):
     # line is dropped. Ephemeral by design — Postgres remains the durable record.
     activity_feed_max_lines: PositiveInt = 50
 
+    # ---- Chaos (Epic 12) ----
+    # How long an injected failure-bias lasts before it self-expires back to normal. The chaos
+    # endpoint writes ``ql:chaos:failure_bias`` with this TTL, so a "make jobs fail" burst decays
+    # on its own without a second call to turn it off.
+    chaos_failure_ttl_seconds: PositiveInt = 30
+
     # ---- Autoscaler thresholds (TDD §5.5) ----
     # min_workers may be 0 (scale all the way down when idle); scale_down_threshold may be
     # 0 (only scale down when the queue is fully empty).

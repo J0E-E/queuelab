@@ -129,7 +129,10 @@ async def run_one_job(
         heartbeat.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await heartbeat
-    if simulate.simulated_job_succeeds(job_type, complexity, rng=rng):
+    # Read the live chaos failure-bias each job (0.0 when none): the chaos endpoint (Epic 12) can
+    # temporarily push outcomes toward failure, and it self-expires via the key's TTL.
+    failure_bias = await queue.get_failure_bias()
+    if simulate.simulated_job_succeeds(job_type, complexity, rng=rng, failure_bias=failure_bias):
         await queue.ack(job.id, worker_id)
     else:
         await queue.nack(job.id, worker_id, error="simulated failure")

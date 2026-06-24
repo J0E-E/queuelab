@@ -13,6 +13,7 @@ import json
 import pytest
 from app.config import settings as app_settings
 from app.queue.protocol import (
+    CHAOS_FAILURE_BIAS_KEY,
     CONFIG_KEY,
     CONTROL_CHANNEL,
     DELAYED_KEY,
@@ -428,6 +429,16 @@ async def test_set_config_is_a_partial_patch(queue, redis_client):
     # An empty patch is a no-op (does not clear the hash).
     await queue.set_config({})
     assert await redis_client.hgetall(CONFIG_KEY) != {}
+
+
+async def test_failure_bias_round_trips_with_a_ttl(queue, redis_client):
+    # No bias set yet reads back as zero (normal failure rates).
+    assert await queue.get_failure_bias() == 0.0
+
+    # Setting a bias stores the value and an expiry, so the injection self-decays.
+    await queue.set_failure_bias(0.5, ttl_seconds=30)
+    assert await queue.get_failure_bias() == 0.5
+    assert 0 < await redis_client.ttl(CHAOS_FAILURE_BIAS_KEY) <= 30
 
 
 async def test_scripts_reload_after_flush(queue, redis_client, make_job):

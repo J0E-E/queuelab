@@ -183,6 +183,14 @@ def _command_to_decision(command: dict) -> ScalingDecision | None:
         return ScalingDecision(
             action="scale_down", worker_id=worker_id, reason=f"manual: scale_down {worker_id}"
         )
+    if verb == "destroy":
+        worker_id = command.get("worker_id")
+        if not isinstance(worker_id, str) or not worker_id:
+            logger.warning("control consumer: destroy missing a worker_id; skipping: %s", command)
+            return None
+        return ScalingDecision(
+            action="destroy", worker_id=worker_id, reason=f"chaos: destroy {worker_id}"
+        )
     logger.warning("control consumer: unknown command; skipping: %s", command)
     return None
 
@@ -321,7 +329,9 @@ async def _carry_out_decision(
     A killed worker is also dropped from the registry: a force-removed container can't run its own
     graceful deregister, so without this its stale field would linger and re-trigger ``replace``
     forever. ``replace`` spawns a fresh worker in the same tick — kill the unhealthy one, stand a
-    new one up.
+    new one up. ``destroy`` (chaos, Epic 12) deliberately does *not* deregister: leaving the stale
+    registry field is what lets the reaper recover the worker's in-flight job and the next tick's
+    ``replace`` stand up a fresh worker — that recovery is the whole point of the chaos button.
     """
     if decision.action == "scale_up":
         for _ in range(decision.count):
@@ -336,6 +346,9 @@ async def _carry_out_decision(
         await queue.deregister_worker(decision.worker_id)
         docker_control.start_worker()
         logger.info("autoscaler: replaced %s — %s", decision.worker_id, decision.reason)
+    elif decision.action == "destroy":
+        docker_control.kill_worker(decision.worker_id)
+        logger.info("autoscaler: destroyed %s — %s", decision.worker_id, decision.reason)
 
 
 def _worker_count_after(decision: ScalingDecision, *, worker_count_before: int) -> int:
@@ -347,7 +360,7 @@ def _worker_count_after(decision: ScalingDecision, *, worker_count_before: int) 
     """
     if decision.action == "scale_up":
         return worker_count_before + decision.count
-    if decision.action == "scale_down":
+    if decision.action in ("scale_down", "destroy"):
         return worker_count_before - 1
     return worker_count_before
 
