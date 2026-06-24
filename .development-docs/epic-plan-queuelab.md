@@ -1188,6 +1188,8 @@ explicit and acyclic.
   - **Shared tail `_apply_decision` (autoscaler_main):** tick and manual consumer both route every
     decision through this one helper (clamp → carry out → audit row + feed publish); future scaling
     paths (e.g. Epic 12's destroy) should reuse it so manual/automatic actions can't drift.
+
+## Epic 11d-2 — Live config API — **COMPLETED** (16m)
 - **Goal:** Operators can read and adjust the live autoscaler thresholds at runtime.
 - **Rough scope:** a `ql:config` Redis hash + `get_config`/`set_config` helpers on
   `JobQueue`; the autoscaler builds effective settings each tick by merging `ql:config`
@@ -1196,9 +1198,43 @@ explicit and acyclic.
   (new `routers/config.py`, Pydantic models reusing the `Settings` threshold-bound
   validators) registered in `main.py`. Tests: API round-trip via the `api_client`
   fixture + a tick test proving an override is honored.
-- **Open questions / decisions for stakeholders:** none expected.
+- **Open questions / decisions for stakeholders:** none — resolved at plan time.
 - **Depends on:** Epic 11d-1.
-- **Implementation notes:** _none yet_
+- **Plan-time decisions (11d-2):**
+  - **Overridable keys = the five policy knobs** `scale_up_threshold`, `scale_down_threshold`,
+    `min_workers`, `max_workers`, `idle_timeout_seconds` — the values `decide_scaling` + the
+    scale-up clamp actually read. Loop intervals, TTLs, caps, and rate limits stay env-only
+    (operational, not live-tunable). A single `OVERRIDABLE_CONFIG_KEYS` tuple in `config.py` is
+    the one source of truth the queue helpers, the merge, and the API models all read.
+  - **`ql:config` = a sparse Redis hash; PUT is a partial patch.** Only provided keys are written;
+    omitted keys fall through to the env-loaded `settings`. `GET /api/config` returns the
+    **effective merged** values actually in force (env baseline with overrides applied), which is
+    what an operator wants to see.
+  - **Validation reuses the `Settings` validators.** The merge builds `Settings(**{**base, **overrides})`
+    so `check_worker_bounds` (`min<=max`) and `check_scale_thresholds` (`down<=up`) run against the
+    *merged* result — catching an override that's individually valid but breaks a cross-field bound
+    against the env baseline. A violation shapes a `422` on PUT; a bad value already stored never
+    crashes the tick (the merge falls back to base on a validation error, logged).
+  - **Both the tick and the control consumer build effective settings** (small, deliberate expansion
+    beyond the rough scope's "each tick"): a shared `_effective_settings(queue, base)` helper is
+    called in `_run_one_tick` **and** `_handle_control_command`, so a manual `scale_up`'s clamp
+    respects a live `max_workers` override exactly as an automatic tick does — manual and automatic
+    paths can't drift (the same ethos as Epic 11d-1's shared `_apply_decision`).
+  - **Set-only this epic.** There is no "clear one override / reset to env default" operation;
+    to restore a default an operator PUTs the env value back. A reset/DELETE is deferred to the
+    backlog — not needed for the frontend's threshold-nudge use (Epic 14).
+- **Implementation notes:**
+  - **Cross-epic contract (Epic 12 chaos, Epic 14 frontend):** `GET/PUT /api/config` reads/writes
+    the five overridable autoscaler thresholds; PUT is a partial patch validated through the
+    `Settings` validators (422 on a cross-field violation). Manual scale commands on `ql:control`
+    now clamp to the **live** (possibly overridden) `max_workers`, not just the env value — so a
+    chaos/frontend `scale_up` honors a runtime cap change.
+  - **Deferred hardening (review-surfaced, for Epic 12 / Epic 18-19):** `PUT /api/config` is
+    unauthenticated (the app has no auth by design) and `max_workers` has no absolute upper bound,
+    so the live cap can be raised past the §5.9 worker guardrail and a manual `scale_up` would
+    clamp to it — a resource lever on the single-EC2 host. Accepted for the portfolio "break-it"
+    posture; if it bites, clamp the overridden `max_workers` to the env-provisioned value (API may
+    lower the live cap, not raise it).
 
 ## Epic 12 — Chaos endpoints
 - **Intent:** Destroy-worker and inject-failures, wired through the autoscaler and

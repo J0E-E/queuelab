@@ -13,6 +13,7 @@ import json
 import pytest
 from app.config import settings as app_settings
 from app.queue.protocol import (
+    CONFIG_KEY,
     CONTROL_CHANNEL,
     DELAYED_KEY,
     LEASES_KEY,
@@ -406,6 +407,27 @@ async def _next_message(pubsub):
             return message
         await asyncio.sleep(0.01)
     return None
+
+
+async def test_config_overrides_round_trip(queue):
+    # An empty ql:config reads back as no overrides.
+    assert await queue.get_config() == {}
+
+    # A partial patch writes only the given keys; get_config decodes them back to ints.
+    await queue.set_config({"scale_up_threshold": 8, "max_workers": 6})
+    assert await queue.get_config() == {"scale_up_threshold": 8, "max_workers": 6}
+
+
+async def test_set_config_is_a_partial_patch(queue, redis_client):
+    await queue.set_config({"scale_up_threshold": 8, "max_workers": 6})
+
+    # A second patch overwrites only its own keys, leaving the untouched override in place.
+    await queue.set_config({"scale_up_threshold": 9})
+    assert await queue.get_config() == {"scale_up_threshold": 9, "max_workers": 6}
+
+    # An empty patch is a no-op (does not clear the hash).
+    await queue.set_config({})
+    assert await redis_client.hgetall(CONFIG_KEY) != {}
 
 
 async def test_scripts_reload_after_flush(queue, redis_client, make_job):

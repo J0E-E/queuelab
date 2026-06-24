@@ -108,6 +108,47 @@ async def test_tick_scales_up_one_container_per_count(queue, redis_client, datab
     assert event.worker_count_after == decision.count
 
 
+async def test_tick_honors_a_live_config_override(queue, redis_client, database, make_job):
+    docker_control = FakeDockerControl()
+    # One worker at the floor and a queue depth below the env scale-up threshold — base settings
+    # would leave it alone.
+    await _seed_worker(queue, "worker-1")
+    for _ in range(settings.scale_up_threshold - 2):
+        await queue.enqueue(make_job())
+
+    baseline = await _run_one_tick(
+        queue, docker_control, IdleTracker(), database, settings=settings
+    )
+    assert baseline.action == "no-op"
+
+    # Lower the threshold live via ql:config; the very next tick now sees the same depth as hot and
+    # scales up — the override took effect without changing the env-loaded settings.
+    await queue.set_config({"scale_up_threshold": 1})
+    overridden = await _run_one_tick(
+        queue, docker_control, IdleTracker(), database, settings=settings
+    )
+    assert overridden.action == "scale_up"
+    assert docker_control.started == overridden.count
+
+
+async def test_tick_ignores_an_invalid_config_override(queue, redis_client, database, make_job):
+    docker_control = FakeDockerControl()
+    await _seed_worker(queue, "worker-1")
+    for _ in range(settings.scale_up_threshold - 2):
+        await queue.enqueue(make_job())
+
+    # A patch that is internally inconsistent once merged (scale_down above scale_up) fails the
+    # Settings validators, so the merge discards it and the tick runs on the env baseline — the
+    # would-be-effective scale_up_threshold=1 is never applied, so the tick stays a no-op.
+    await queue.set_config({"scale_up_threshold": 1, "scale_down_threshold": 99})
+    decision = await _run_one_tick(
+        queue, docker_control, IdleTracker(), database, settings=settings
+    )
+
+    assert decision.action == "no-op"
+    assert docker_control.started == 0
+
+
 async def test_tick_does_not_spawn_past_the_cap_when_running_workers_have_not_registered_yet(
     queue, redis_client, database, make_job
 ):

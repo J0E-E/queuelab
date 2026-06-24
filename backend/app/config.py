@@ -125,6 +125,19 @@ class Settings(BaseSettings):
         return self
 
 
+# The autoscaler thresholds an operator may retune live via ``ql:config`` / ``PUT /api/config``
+# (Epic 11d-2) — the values ``decide_scaling`` and the scale-up clamp actually read. Everything
+# else (loop intervals, TTLs, caps, rate limits) stays env-only. This tuple is the single source
+# of truth the queue config helpers, the autoscaler merge, and the config API models all read.
+OVERRIDABLE_CONFIG_KEYS = (
+    "min_workers",
+    "max_workers",
+    "scale_up_threshold",
+    "scale_down_threshold",
+    "idle_timeout_seconds",
+)
+
+
 @lru_cache
 def get_settings() -> Settings:
     """Return the process-wide cached settings instance."""

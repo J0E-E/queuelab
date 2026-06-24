@@ -23,6 +23,7 @@ from redis.commands.core import AsyncScript
 from app.config import settings
 
 from .protocol import (
+    CONFIG_KEY,
     CONTROL_CHANNEL,
     COUNT_FIELDS,
     COUNTS_KEY,
@@ -273,6 +274,30 @@ class JobQueue:
         resulting feed line never cross.
         """
         await self._redis.publish(CONTROL_CHANNEL, json.dumps(command, separators=(",", ":")))
+
+    # ---- Live config overrides (autoscaler thresholds, Epic 11d-2) ---------------
+
+    async def get_config(self) -> dict[str, int]:
+        """Return the live autoscaler-threshold overrides as ``{setting_name: value}``.
+
+        Reads the sparse ``ql:config`` hash — only keys an operator has set are present; the
+        autoscaler merges these over its env-loaded base settings each tick. Values are stored as
+        integers (the overridable thresholds are all ints), so they are decoded back to ``int``.
+        """
+        raw = await self._redis.hgetall(CONFIG_KEY)
+        return {key: int(value) for key, value in raw.items()}
+
+    async def set_config(self, overrides: dict[str, int]) -> None:
+        """Write a partial patch of autoscaler-threshold overrides into ``ql:config``.
+
+        Only the provided keys are written (a single ``HSET``); any key left out keeps its prior
+        override or falls through to the env default. Callers (``PUT /api/config``) validate the
+        keys and the merged result before calling this, so this is a thin, trusted writer. A no-op
+        for an empty patch.
+        """
+        if not overrides:
+            return
+        await self._redis.hset(CONFIG_KEY, mapping=overrides)
 
     # ---- Recovery (used by the reaper loop, Epic 9) ------------------------------
 

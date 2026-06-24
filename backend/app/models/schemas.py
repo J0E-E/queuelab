@@ -122,6 +122,40 @@ class MetricsResponse(BaseModel):
     worker_count: int
 
 
+class AutoscalerConfig(BaseModel):
+    """The autoscaler thresholds in force, returned by ``GET /api/config`` (Epic 11d-2).
+
+    These are the *effective* values: the env-loaded defaults with any live ``ql:config`` override
+    applied on top, i.e. exactly what the control loop reasons over right now. The keys mirror
+    :data:`app.config.OVERRIDABLE_CONFIG_KEYS`.
+    """
+
+    min_workers: int
+    max_workers: int
+    scale_up_threshold: int
+    scale_down_threshold: int
+    idle_timeout_seconds: int
+
+
+class AutoscalerConfigUpdate(BaseModel):
+    """The body for ``PUT /api/config`` — a partial patch of autoscaler thresholds (Epic 11d-2).
+
+    Every field is optional: only the keys present are written, leaving the others at their prior
+    override or env default. An unknown key is rejected (``extra="forbid"``) so a typo surfaces
+    rather than being silently dropped. The *values* are validated by re-building the full
+    :class:`app.config.Settings` from the merged result, so a cross-field violation (e.g.
+    ``scale_down_threshold`` above ``scale_up_threshold``) comes back as a system-voice ``[ERR]``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    min_workers: int | None = None
+    max_workers: int | None = None
+    scale_up_threshold: int | None = None
+    scale_down_threshold: int | None = None
+    idle_timeout_seconds: int | None = None
+
+
 class ScalingEventResponse(BaseModel):
     """A scaling-event row as the API returns it."""
 

@@ -24,7 +24,9 @@ import signal
 from dataclasses import replace
 from datetime import UTC, datetime
 
-from app.config import Settings, settings
+from pydantic import ValidationError
+
+from app.config import OVERRIDABLE_CONFIG_KEYS, Settings, settings
 from app.db.engine import Database
 from app.models.scaling_event import ScalingEvent
 from app.queue.client import JobQueue
@@ -138,6 +140,7 @@ async def _handle_control_command(
         decision = _command_to_decision(json.loads(message["data"]))
         if decision is None:
             return
+        settings = await _effective_settings(queue, settings)
         worker_count_before = len(await queue.list_workers())
         await _apply_decision(
             decision,
@@ -184,6 +187,29 @@ def _command_to_decision(command: dict) -> ScalingDecision | None:
     return None
 
 
+async def _effective_settings(queue: JobQueue, base_settings: Settings) -> Settings:
+    """Merge the live ``ql:config`` overrides over the env-loaded base and return the result.
+
+    An operator can retune the autoscaler thresholds at runtime (Epic 11d-2) via
+    ``PUT /api/config``, which writes a sparse patch into ``ql:config``. The control loop reads that
+    patch each tick (and each manual command) and folds it over the base settings here, so a change
+    takes effect within a tick without a redeploy. Only :data:`OVERRIDABLE_CONFIG_KEYS` are honored;
+    any other stored key is ignored. The merged values are revalidated through the ``Settings``
+    model, so a stored override that breaks a cross-field bound (e.g. ``scale_down_threshold`` above
+    ``scale_up_threshold``) is logged and the base settings are used unchanged — a bad override
+    never crashes or stalls the loop.
+    """
+    overrides = await queue.get_config()
+    safe = {key: value for key, value in overrides.items() if key in OVERRIDABLE_CONFIG_KEYS}
+    if not safe:
+        return base_settings
+    try:
+        return Settings(**{**base_settings.model_dump(), **safe})
+    except ValidationError:
+        logger.warning("ignoring invalid ql:config override %s; using base settings", safe)
+        return base_settings
+
+
 async def _run_one_tick(
     queue: JobQueue,
     docker_control: DockerControl,
@@ -199,6 +225,7 @@ async def _run_one_tick(
     worker counts only once it has actually booted and registered. Every action but ``no-op`` is
     written to Postgres as an audit row.
     """
+    settings = await _effective_settings(queue, settings)
     queue_depth = await queue.queue_depth()
     workers = await queue.list_workers()
     now_ms = await queue.now_ms()

@@ -57,6 +57,13 @@ SCALING_CHANNEL = "ql:events:scaling"
 # the verbs match the ``ScalingDecision.action`` vocabulary so they map straight onto the policy.
 CONTROL_CHANNEL = "ql:control"
 
+# Redis hash holding live autoscaler-threshold overrides (Epic 11d-2). A sparse map of
+# ``{setting_name -> value}`` for the keys in ``OVERRIDABLE_CONFIG_KEYS`` (see app.config); any
+# key absent here falls through to the env-loaded ``settings``. The autoscaler merges this over
+# its base settings each tick (and each manual command), so an operator can retune scaling at
+# runtime via ``PUT /api/config`` without a redeploy.
+CONFIG_KEY = "ql:config"
+
 
 def job_key(job_id: str) -> str:
     """Return the Redis Hash key holding the full record for ``job_id``."""
