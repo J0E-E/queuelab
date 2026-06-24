@@ -1152,7 +1152,7 @@ explicit and acyclic.
   - **Re-verified after review fixes.** ruff `check` + `format --check` clean; the two epic test
     files pass **15** (14 prior + 1 new cap-clamp guard test) against auto-spun Redis/Postgres.
 
-## Epic 11d-1 — Manual control channel
+## Epic 11d-1 — Manual control channel — **COMPLETED** (39m · 19.1M tok · 480k tok/min)
 - **Goal:** Operators can drive scaling manually — a command on `ql:control` (add N
   workers / kill worker X) is consumed by the autoscaler and carried out via the
   existing Docker control.
@@ -1164,11 +1164,30 @@ explicit and acyclic.
   No HTTP scale endpoint — the operator trigger comes via the frontend / Epic 12, which
   already publish on `ql:control`. Integration test publishes to `ql:control` directly
   (testcontainers Redis, faked DockerControl).
-- **Open questions / decisions for stakeholders:** none expected.
+- **Open questions / decisions for stakeholders:** none — resolved at plan time.
+  - **Command payload schema (cross-epic contract).** `{"command": "scale_up", "count": N}`
+    / `{"command": "scale_down", "worker_id": "X"}`. Key is `command` (imperative request)
+    to stay distinct from the `action` key on the `ql:events:scaling` outcome channel;
+    verbs match the existing `ScalingDecision.action` vocabulary so they map straight onto
+    `_carry_out_decision`. Epic 12 (chaos) and Epic 14 (frontend) publish this exact shape.
+  - **Bad / excessive command handling.** Reuse the existing machinery: malformed / unknown
+    commands are logged and skipped (best-effort handler); an over-cap `scale_up` is clamped
+    via `_clamp_scale_up_to_running_cap` (`max_workers` respected); a `scale_down` of a gone
+    worker is a harmless swallowed no-op (`kill_worker` already swallows `NotFound`).
+  - **Audit + feed parity.** A manual command that actually does something writes the same
+    `scaling_event` row and publishes the same activity-feed line as an automated tick, with
+    a `reason` marking it manual (e.g. `manual: scale_up 2`); a clamped command records the
+    count that ran, a skipped / no-op command records nothing.
 - **Depends on:** Epic 11c.
-- **Implementation notes:** _none yet_
-
-## Epic 11d-2 — Live config API
+- **Implementation notes:**
+  - **Publisher contract (Epic 12 chaos, Epic 14 frontend):** publish on `ql:control` via
+    `JobQueue.publish_control_command`; payload key is `command` (not `action`),
+    `{"command":"scale_up","count":N}` / `{"command":"scale_down","worker_id":"X"}`. A
+    `scale_down`'s `worker_id` is a real id from the `ql:workers` registry — a missing/blank one is
+    skipped and a gone worker is a harmless no-op, so publishers need no "does it exist" pre-check.
+  - **Shared tail `_apply_decision` (autoscaler_main):** tick and manual consumer both route every
+    decision through this one helper (clamp → carry out → audit row + feed publish); future scaling
+    paths (e.g. Epic 12's destroy) should reuse it so manual/automatic actions can't drift.
 - **Goal:** Operators can read and adjust the live autoscaler thresholds at runtime.
 - **Rough scope:** a `ql:config` Redis hash + `get_config`/`set_config` helpers on
   `JobQueue`; the autoscaler builds effective settings each tick by merging `ql:config`

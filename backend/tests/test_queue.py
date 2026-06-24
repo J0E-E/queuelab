@@ -13,6 +13,7 @@ import json
 import pytest
 from app.config import settings as app_settings
 from app.queue.protocol import (
+    CONTROL_CHANNEL,
     DELAYED_KEY,
     LEASES_KEY,
     READY_KEY,
@@ -378,6 +379,33 @@ async def test_enqueue_at_capacity_raises(queue, redis_client, make_job, monkeyp
     # The rejected enqueue left no trace.
     assert await queue.queue_depth() == 2
     assert (await queue.counts())["queued"] == 2
+
+
+async def test_publish_control_command_round_trips_off_the_channel(queue, redis_client):
+    # A command published on ql:control must arrive verbatim to a subscriber on that channel —
+    # this is the request side the autoscaler's control consumer (Epic 11d-1) listens on.
+    pubsub = redis_client.pubsub()
+    await pubsub.subscribe(CONTROL_CHANNEL)
+    # Drain the subscribe-confirmation frame so what follows is purely the published command.
+    await _next_message(pubsub)
+
+    command = {"command": "scale_up", "count": 2}
+    await queue.publish_control_command(command)
+
+    message = await _next_message(pubsub)
+    assert message is not None
+    assert json.loads(message["data"]) == command
+    await pubsub.aclose()
+
+
+async def _next_message(pubsub):
+    """Poll for the next pub/sub frame (subscribe-confirm or message), or None within the window."""
+    for _ in range(150):
+        message = await pubsub.get_message(ignore_subscribe_messages=False, timeout=0.02)
+        if message is not None:
+            return message
+        await asyncio.sleep(0.01)
+    return None
 
 
 async def test_scripts_reload_after_flush(queue, redis_client, make_job):

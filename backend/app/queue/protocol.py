@@ -48,6 +48,15 @@ STATE_CHANNEL = "ql:events:state"
 # durable-writer) would otherwise misread a scaling action as a job state-change.
 SCALING_CHANNEL = "ql:events:scaling"
 
+# Pub/sub channel for manual scaling commands (Epic 11d-1). This is the *request* side that mirrors
+# SCALING_CHANNEL's *outcome* side: an operator trigger publishes a command here and the autoscaler
+# process consumes it and carries it out. The publishers are Epic 12 (chaos endpoints) and Epic 14
+# (the frontend's scale/destroy controls); both send the shape
+# ``{"command": "scale_up", "count": N}`` / ``{"command": "scale_down", "worker_id": "X"}``. The key
+# is ``command`` (the imperative request), distinct from the ``action`` key on SCALING_CHANNEL, but
+# the verbs match the ``ScalingDecision.action`` vocabulary so they map straight onto the policy.
+CONTROL_CHANNEL = "ql:control"
+
 
 def job_key(job_id: str) -> str:
     """Return the Redis Hash key holding the full record for ``job_id``."""

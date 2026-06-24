@@ -1,0 +1,2 @@
+# Added by .claude/setup - keep the shared .claude/ tooling junction out of the graph.
+.claude/**

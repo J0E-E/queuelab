@@ -9,10 +9,18 @@ records start/kill calls instead of touching a daemon — no Docker required.
 
 from __future__ import annotations
 
-from app.autoscaler_main import IdleTracker, _run_one_tick
+import asyncio
+import contextlib
+
+from app.autoscaler_main import (
+    IdleTracker,
+    _handle_control_command,
+    _run_one_tick,
+    run_control_consumer,
+)
 from app.config import Settings, settings
 from app.models.scaling_event import ScalingEvent
-from app.queue.protocol import READY_KEY
+from app.queue.protocol import CONTROL_CHANNEL, READY_KEY
 from sqlalchemy import select
 
 
@@ -259,3 +267,141 @@ async def test_autoscaler_scales_up_to_the_cap_then_idle_scales_down_to_the_floo
     assert actions[0] == "scale_up"
     assert actions.count("scale_down") == test_settings.max_workers - test_settings.min_workers
     assert "no-op" not in actions
+
+
+# ---- The manual control consumer (Epic 11d-1): commands off ql:control -----------------
+
+
+async def _poll_until(check, *, attempts: int = 200, interval: float = 0.02):
+    """Poll ``check`` until it returns a truthy result, then return it; fail if it never does."""
+    for _ in range(attempts):
+        result = await check()
+        if result:
+            return result
+        await asyncio.sleep(interval)
+    raise AssertionError("condition was not met within the poll window")
+
+
+@contextlib.asynccontextmanager
+async def _running_control_consumer(queue, docker_control, database, *, run_settings):
+    """Run the control consumer as a background task for the block, then stop it via stop_event."""
+    stop_event = asyncio.Event()
+    task = asyncio.create_task(
+        run_control_consumer(
+            queue, docker_control, database, settings=run_settings, stop_event=stop_event
+        )
+    )
+    try:
+        # Pub/sub has no replay, so wait until the subscription is live before publishing.
+        async def _subscribed():
+            counts = await queue._redis.pubsub_numsub(CONTROL_CHANNEL)
+            return bool(counts) and counts[0][1] >= 1
+
+        await _poll_until(_subscribed)
+        yield task
+    finally:
+        stop_event.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+async def test_control_scale_up_spawns_containers_and_audits(queue, redis_client, database):
+    docker_control = FakeDockerControl()
+
+    async with _running_control_consumer(queue, docker_control, database, run_settings=settings):
+        await queue.publish_control_command({"command": "scale_up", "count": 2})
+        await _poll_until(lambda: _settled(docker_control.started == 2))
+
+    assert docker_control.killed == []
+    # One audit row + one published feed line, with a manual reason and the count that ran.
+    (event,) = await _scaling_events(database)
+    assert event.action == "scale_up"
+    assert event.reason == "manual: scale_up 2"
+    assert event.worker_count_after == 2
+
+
+async def test_control_scale_down_kills_deregisters_and_audits(queue, redis_client, database):
+    docker_control = FakeDockerControl()
+    await _seed_worker(queue, "worker-1")
+    await _seed_worker(queue, "worker-2")
+
+    async with _running_control_consumer(queue, docker_control, database, run_settings=settings):
+        await queue.publish_control_command({"command": "scale_down", "worker_id": "worker-1"})
+        await _poll_until(lambda: _settled(docker_control.killed == ["worker-1"]))
+
+    # The named worker is killed and gone from the registry; the survivor remains.
+    assert docker_control.started == 0
+    assert set((await queue.list_workers()).keys()) == {"worker-2"}
+    (event,) = await _scaling_events(database)
+    assert event.action == "scale_down"
+    assert event.worker_id == "worker-1"
+    assert event.reason == "manual: scale_down worker-1"
+    assert event.worker_count_after == 1
+
+
+async def _settled(condition: bool) -> bool:
+    """Adapter so a plain boolean can drive the async ``_poll_until`` checker."""
+    return condition
+
+
+# ---- Edge cases: clamp, malformed/unknown, gone worker (handler driven directly) -------
+
+
+async def test_control_scale_up_over_cap_is_clamped_to_max_workers(queue, redis_client, database):
+    docker_control = FakeDockerControl()
+    over_cap = settings.max_workers + 5
+
+    # Drive the handler directly with a fabricated pub/sub frame — deterministic, no live socket.
+    await _handle_control_command(
+        {"data": f'{{"command":"scale_up","count":{over_cap}}}'},
+        queue,
+        docker_control,
+        database,
+        settings=settings,
+    )
+
+    # The shared clamp held the hard cap: it spawned exactly max_workers, not the over-cap request.
+    assert docker_control.started == settings.max_workers
+    (event,) = await _scaling_events(database)
+    assert event.action == "scale_up"
+    # The audit records the count that actually ran (the clamped fleet size), not the request.
+    assert event.worker_count_after == settings.max_workers
+
+
+async def test_control_scale_down_of_a_gone_worker_is_harmless(queue, redis_client, database):
+    docker_control = FakeDockerControl()
+    # No such worker in the registry; kill_worker swallows NotFound and deregister is a no-op.
+    await _handle_control_command(
+        {"data": '{"command":"scale_down","worker_id":"ghost"}'},
+        queue,
+        docker_control,
+        database,
+        settings=settings,
+    )
+
+    # It still records the scale_down (the command did request an action); nothing crashed.
+    assert docker_control.killed == ["ghost"]
+    (event,) = await _scaling_events(database)
+    assert event.action == "scale_down"
+    assert event.worker_id == "ghost"
+
+
+async def test_control_malformed_and_unknown_commands_are_skipped(queue, redis_client, database):
+    docker_control = FakeDockerControl()
+    bad_messages = [
+        {"data": "not-json{"},  # unparseable JSON
+        {"data": '{"command":"scale_up"}'},  # missing count
+        {"data": '{"command":"scale_up","count":0}'},  # non-positive count
+        {"data": '{"command":"scale_down"}'},  # missing worker_id
+        {"data": '{"command":"obliterate"}'},  # unknown verb
+        {"data": "{}"},  # no command key at all
+    ]
+
+    for message in bad_messages:
+        # None of these crash the consumer; each is logged and skipped.
+        await _handle_control_command(message, queue, docker_control, database, settings=settings)
+
+    # Nothing was carried out and nothing was audited.
+    assert docker_control.started == 0
+    assert docker_control.killed == []
+    assert await _scaling_events(database) == []

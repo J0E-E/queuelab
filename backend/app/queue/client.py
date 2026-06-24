@@ -23,6 +23,7 @@ from redis.commands.core import AsyncScript
 from app.config import settings
 
 from .protocol import (
+    CONTROL_CHANNEL,
     COUNT_FIELDS,
     COUNTS_KEY,
     DELAYED_KEY,
@@ -260,6 +261,18 @@ class JobQueue:
         subscribers never see a scaling action.
         """
         await self._redis.publish(SCALING_CHANNEL, json.dumps(event, separators=(",", ":")))
+
+    async def publish_control_command(self, command: dict[str, Any]) -> None:
+        """Publish one manual scaling command on the control channel for the autoscaler to run.
+
+        This is the request side of manual scaling (Epic 11d-1): an operator trigger — the chaos
+        endpoints (Epic 12) or the frontend's scale/destroy controls (Epic 14) — publishes a
+        ``{"command": "scale_up", "count": N}`` / ``{"command": "scale_down", "worker_id": "X"}``
+        here, and the autoscaler process's control consumer turns it into a real scaling action. The
+        channel is separate from ``SCALING_CHANNEL`` (the outcome side) so the request and the
+        resulting feed line never cross.
+        """
+        await self._redis.publish(CONTROL_CHANNEL, json.dumps(command, separators=(",", ":")))
 
     # ---- Recovery (used by the reaper loop, Epic 9) ------------------------------
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import signal
 from dataclasses import replace
@@ -27,6 +28,8 @@ from app.config import Settings, settings
 from app.db.engine import Database
 from app.models.scaling_event import ScalingEvent
 from app.queue.client import JobQueue
+from app.queue.protocol import CONTROL_CHANNEL
+from app.realtime.subscriber import run_state_subscriber
 from app.services.autoscaler import ScalingDecision, decide_scaling
 from app.services.docker_control import DockerControl
 
@@ -82,6 +85,105 @@ async def run_autoscaler(
         await _sleep_until_stop(stop_event, seconds=settings.autoscaler_loop_seconds)
 
 
+async def run_control_consumer(
+    queue: JobQueue,
+    docker_control: DockerControl,
+    database: Database,
+    *,
+    settings: Settings,
+    stop_event: asyncio.Event,
+) -> None:
+    """Consume manual scaling commands off ``ql:control`` and carry each one out (Epic 11d-1).
+
+    Runs beside the tick loop in the same process so a manual command lands through the exact same
+    Docker control and audit trail as an automatic one. The subscribe loop, its re-subscribe guard,
+    and "one bad message never unwinds the loop" all come from the shared
+    :func:`run_state_subscriber`; this only supplies the per-command handler. The handler is
+    best-effort — a malformed or unknown command is logged and skipped, never crashing the consumer.
+    The subscriber runs until cancelled; this waits on ``stop_event`` and cancels it so the consumer
+    winds down with the rest of the process on SIGTERM/SIGINT.
+    """
+
+    async def handle_message(message: dict) -> None:
+        await _handle_control_command(message, queue, docker_control, database, settings=settings)
+
+    subscriber = asyncio.create_task(
+        run_state_subscriber(queue, CONTROL_CHANNEL, handle_message, name="control")
+    )
+    try:
+        await stop_event.wait()
+    finally:
+        subscriber.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await subscriber
+
+
+async def _handle_control_command(
+    message: dict,
+    queue: JobQueue,
+    docker_control: DockerControl,
+    database: Database,
+    *,
+    settings: Settings,
+) -> None:
+    """Map one published command to a :class:`ScalingDecision` and run it through the shared tail.
+
+    Best-effort: a malformed payload (bad JSON, missing ``count``, unknown verb) is logged and
+    skipped so the shared subscribe loop stays alive across it. A recognized command becomes a
+    decision with a ``manual:`` reason and goes through :func:`_apply_decision`, so it is clamped,
+    carried out, and audited exactly like a tick's decision — the worker count for the audit row is
+    read live from the registry, the same source the tick uses.
+    """
+    try:
+        decision = _command_to_decision(json.loads(message["data"]))
+        if decision is None:
+            return
+        worker_count_before = len(await queue.list_workers())
+        await _apply_decision(
+            decision,
+            queue,
+            docker_control,
+            database,
+            worker_count_before=worker_count_before,
+            settings=settings,
+        )
+    except Exception:
+        logger.exception("control consumer: failed to handle a command; skipping")
+
+
+def _command_to_decision(command: dict) -> ScalingDecision | None:
+    """Translate a manual command dict into a :class:`ScalingDecision`, or ``None`` to skip it.
+
+    The contract (Epic 11d-1, also published by Epic 12 / Epic 14) is
+    ``{"command": "scale_up", "count": N}`` / ``{"command": "scale_down", "worker_id": "X"}``. The
+    ``command`` verbs match the ``ScalingDecision.action`` vocabulary so they map straight across.
+    Anything else — an unknown verb, a ``scale_up`` without a positive ``count``, a ``scale_down``
+    without a ``worker_id`` — is logged and skipped (returns ``None``), never executed.
+    """
+    verb = command.get("command")
+    if verb == "scale_up":
+        count = command.get("count")
+        # bool is an int subclass, so reject it explicitly — a JSON ``true`` is not a count.
+        if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
+            logger.warning(
+                "control consumer: scale_up missing a positive count; skipping: %s", command
+            )
+            return None
+        return ScalingDecision(action="scale_up", count=count, reason=f"manual: scale_up {count}")
+    if verb == "scale_down":
+        worker_id = command.get("worker_id")
+        if not isinstance(worker_id, str) or not worker_id:
+            logger.warning(
+                "control consumer: scale_down missing a worker_id; skipping: %s", command
+            )
+            return None
+        return ScalingDecision(
+            action="scale_down", worker_id=worker_id, reason=f"manual: scale_down {worker_id}"
+        )
+    logger.warning("control consumer: unknown command; skipping: %s", command)
+    return None
+
+
 async def _run_one_tick(
     queue: JobQueue,
     docker_control: DockerControl,
@@ -110,8 +212,36 @@ async def _run_one_tick(
         settings=settings,
         now_ms=now_ms,
     )
+    return await _apply_decision(
+        decision,
+        queue,
+        docker_control,
+        database,
+        worker_count_before=len(workers),
+        settings=settings,
+    )
+
+
+async def _apply_decision(
+    decision: ScalingDecision,
+    queue: JobQueue,
+    docker_control: DockerControl,
+    database: Database,
+    *,
+    worker_count_before: int,
+    settings: Settings,
+) -> ScalingDecision:
+    """Clamp, carry out, and record one decision — the shared tail of automatic and manual actions.
+
+    Both the tick (:func:`_run_one_tick`) and a manual command (:func:`run_control_consumer`) feed
+    their decision through here, so the two paths can't drift: a manual ``scale_up`` is clamped to
+    the running cap exactly as the policy's is, and every executed action — automatic or manual —
+    writes the same ``scaling_event`` audit row and publishes the same activity-feed line. A
+    ``no-op`` (including a ``scale_up`` the clamp suppressed at the cap) records nothing. Returns
+    the decision as actually executed (post-clamp), so a caller can see what ran.
+    """
     decision = _clamp_scale_up_to_running_cap(decision, docker_control, settings=settings)
-    worker_count_after = _worker_count_after(decision, worker_count_before=len(workers))
+    worker_count_after = _worker_count_after(decision, worker_count_before=worker_count_before)
     await _carry_out_decision(decision, queue, docker_control)
     if decision.action != "no-op":
         event = {
@@ -243,8 +373,17 @@ async def main() -> None:
             loop.add_signal_handler(signal_number, stop_event.set)
 
     try:
-        await run_autoscaler(
-            queue, docker_control, database, settings=settings, stop_event=stop_event
+        # The tick loop and the manual-control consumer run side by side on one stop_event: a
+        # SIGTERM/SIGINT sets it and both wind down together (Epic 11d-1). gather propagates the
+        # first failure, so a fatal error in either tears the process down rather than leaving a
+        # half-running autoscaler.
+        await asyncio.gather(
+            run_autoscaler(
+                queue, docker_control, database, settings=settings, stop_event=stop_event
+            ),
+            run_control_consumer(
+                queue, docker_control, database, settings=settings, stop_event=stop_event
+            ),
         )
     finally:
         docker_control.close()
