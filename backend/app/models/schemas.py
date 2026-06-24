@@ -159,6 +159,20 @@ class DestroyWorkerResponse(BaseModel):
     worker_id: str
 
 
+class ArchitectureSection(BaseModel):
+    """One in-context architecture note (Epic 15): a pane key, a title, and explanatory copy."""
+
+    key: str
+    title: str
+    body: str
+
+
+class ArchitectureResponse(BaseModel):
+    """The body of ``GET /api/architecture`` — the ordered architecture notes for the UI."""
+
+    sections: list[ArchitectureSection]
+
+
 class AutoscalerConfig(BaseModel):
     """The autoscaler thresholds in force, returned by ``GET /api/config`` (Epic 11d-2).
 

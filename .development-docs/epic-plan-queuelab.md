@@ -1407,7 +1407,7 @@ explicit and acyclic.
     snapshot's `counts.queued` so it isn't `0` for the first ~1s; (4) add a mock-`WebSocket` unit
     test for `lib/ws.ts` reconnect/backoff (the reducer + panes are covered).
 
-## Epic 15 — In-context architecture content & endpoint
+## Epic 15 — In-context architecture content & endpoint [UI] — **COMPLETED** (7m)
 - **Intent:** Surface the explanatory architecture notes where the visitor is looking.
 - **Scope:** `GET /api/architecture` (content served to UI), ArchitecturePane in the
   frontend rendering the in-context explanations against live panes. Light tests for
@@ -1415,6 +1415,23 @@ explicit and acyclic.
 - **Verification:** Architecture pane renders explanatory copy tied to the relevant
   panes; endpoint returns expected content; ids present.
 - **Depends on:** Epic 14.
+- **Open questions / decisions for stakeholders:** none — resolved at plan time.
+- **Plan-time decisions (15):**
+  - **Content lives server-side, returned as structured sections.** A backend content module
+    (`app/services/architecture.py`) holds the notes as `[{key, title, body}]`; `GET /api/architecture`
+    returns `{sections: [...]}` (a `ArchitectureResponse` DTO). Content can change without a frontend
+    rebuild (matches the scope's "content served to UI"). Public, unauthenticated, like `/api/metrics`.
+  - **Sections are keyed to the dashboard panes** (`queue`, `workers`, `chaos`, `realtime`,
+    `guardrails`) so each note explains the mechanic an adjacent pane shows — terminal-voiced copy
+    drawn from the TDD/BRD. The `key` is the cross-epic contract a later UI could use to anchor a note
+    beside its pane.
+  - **`ArchitecturePane` renders the fetched sections** in the dashboard (in-context = visible
+    alongside the live panes); a `useArchitecture` hook fetches once on mount. Render-only, no live
+    state. Each section is a titled block with a unique id.
+- **Implementation notes:**
+  - **Architecture content contract (Epic 16):** `GET /api/architecture` → `{sections:[{key,title,
+    body}]}`; the explainer pages (Epic 16) may reuse the same content module rather than duplicating
+    the copy.
 
 ## Epic 16 — Explainer pages (How It Works & How I Work)
 - **Intent:** Two static, narrative explainer pages that earn credibility for the

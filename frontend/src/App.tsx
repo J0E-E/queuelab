@@ -1,9 +1,11 @@
 import { destroyWorker, injectFailures, updateConfig } from './lib/api';
 import { Scanlines } from './components/Scanlines';
 import { deriveWorkers } from './hooks/liveState';
+import { useArchitecture } from './hooks/useArchitecture';
 import { useLiveState } from './hooks/useLiveState';
 import { useSession } from './hooks/useSession';
 import { useSubmitJobs } from './hooks/useSubmitJobs';
+import { ArchitecturePane } from './panes/ArchitecturePane';
 import { FeedPane } from './panes/FeedPane';
 import { MetricsPane } from './panes/MetricsPane';
 import { QueueDepthPane } from './panes/QueueDepthPane';
@@ -20,6 +22,7 @@ const CHAOS_BIAS = 0.5;
 export function App() {
   const identity = useSession();
   const state = useLiveState();
+  const architecture = useArchitecture();
   const { submit, isSubmitting, error, accepted } = useSubmitJobs();
   const sessionId = identity?.session_id;
   const workers = deriveWorkers(state);
@@ -91,6 +94,8 @@ export function App() {
           />
           <FeedPane lines={state.feed} />
         </div>
+
+        <ArchitecturePane sections={architecture} />
       </main>
     </>
   );

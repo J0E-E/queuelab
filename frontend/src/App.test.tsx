@@ -20,6 +20,9 @@ vi.mock('./hooks/useLiveState', () => ({
 vi.mock('./hooks/useSubmitJobs', () => ({
   useSubmitJobs: () => ({ submit: vi.fn(), isSubmitting: false, error: null, accepted: null }),
 }));
+vi.mock('./hooks/useArchitecture', () => ({
+  useArchitecture: () => [{ key: 'queue', title: 'Custom Redis queue', body: 'raw primitives' }],
+}));
 
 import { App } from './App';
 
@@ -32,5 +35,8 @@ describe('App dashboard', () => {
     expect(document.getElementById('workers-pane')).toBeInTheDocument();
     expect(document.getElementById('submit-form')).toBeInTheDocument();
     expect(document.getElementById('feed-line-0')).toHaveTextContent('worker-1 started job#1');
+    expect(document.getElementById('architecture-section-queue')).toHaveTextContent(
+      'Custom Redis queue',
+    );
   });
 });

@@ -33,7 +33,7 @@ from app.realtime.durable_writer import run_durable_writer
 from app.realtime.metrics_tick import run_metrics_tick
 from app.realtime.scaling_feed import run_scaling_feed
 from app.reaper import run_reaper
-from app.routers import chaos, config, jobs, metrics, realtime, session
+from app.routers import architecture, chaos, config, jobs, metrics, realtime, session
 from app.services.activity_feed import ActivityFeed
 from app.services.guardrails import register_guardrail_handlers
 from app.services.rate_limit import RateLimiter
@@ -153,6 +153,7 @@ app.include_router(realtime.router)
 app.include_router(metrics.router)
 app.include_router(config.router)
 app.include_router(chaos.router)
+app.include_router(architecture.router)
 # Turn guardrail errors (caps, rate limits, full queue) into system-voiced HTTP responses.
 # The producer endpoints (POST /api/jobs) are the first to raise them.
 register_guardrail_handlers(app)

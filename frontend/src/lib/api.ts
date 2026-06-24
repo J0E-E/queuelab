@@ -35,6 +35,12 @@ export interface AutoscalerConfig {
   idle_timeout_seconds: number;
 }
 
+export interface ArchitectureSection {
+  key: string;
+  title: string;
+  body: string;
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -99,6 +105,10 @@ export function injectFailures(
 
 export function getConfig(): Promise<AutoscalerConfig> {
   return request<AutoscalerConfig>('/api/config');
+}
+
+export function getArchitecture(): Promise<{ sections: ArchitectureSection[] }> {
+  return request<{ sections: ArchitectureSection[] }>('/api/architecture');
 }
 
 export function updateConfig(patch: Partial<AutoscalerConfig>): Promise<AutoscalerConfig> {
