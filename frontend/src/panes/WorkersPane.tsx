@@ -38,7 +38,7 @@ export function WorkersPane({
           </p>
         ) : (
           workers.map((cell) =>
-            cell.workerId ? (
+            cell.status === 'running' && cell.workerId ? (
               <button
                 key={cell.id}
                 id={`destroy-cell-${cell.workerId}`}
@@ -49,7 +49,7 @@ export function WorkersPane({
                 <WorkerCell id={cell.id} status={cell.status} workerId={cell.workerId} />
               </button>
             ) : (
-              <WorkerCell key={cell.id} id={cell.id} status={cell.status} />
+              <WorkerCell key={cell.id} id={cell.id} status={cell.status} workerId={cell.workerId} />
             ),
           )
         )}
@@ -75,16 +75,24 @@ export function WorkersPane({
           </BracketButton>
         </div>
       </div>
-      {chaosSuccess ? (
-        <p id="worker-chaos-success" className="pt-3 text-ok">
-          {chaosSuccess}
-        </p>
-      ) : null}
-      {chaosWarning ? (
-        <p id="worker-chaos-warning" className="pt-1 text-error">
-          {chaosWarning}
-        </p>
-      ) : null}
+      {/* Reserve the chaos-outcome space up front (min height for both lines) so a `[WARN]`/`[OK]`
+          appearing or clearing never shifts the pane below it. `aria-live` announces each outcome. */}
+      <div
+        id="worker-chaos-status"
+        aria-live="polite"
+        className="min-h-14 space-y-1 pt-3 text-sm"
+      >
+        {chaosSuccess ? (
+          <p id="worker-chaos-success" className="text-ok">
+            {chaosSuccess}
+          </p>
+        ) : null}
+        {chaosWarning ? (
+          <p id="worker-chaos-warning" className="text-error">
+            {chaosWarning}
+          </p>
+        ) : null}
+      </div>
     </Pane>
   );
 }

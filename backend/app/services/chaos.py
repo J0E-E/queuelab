@@ -20,6 +20,7 @@ from app.config import settings
 from app.queue.client import JobQueue
 from app.services.guardrails import InvalidSubmissionError, NoWorkersError
 from app.services.rate_limit import RateLimiter
+from app.services.session_store import SessionStore
 
 
 async def inject_failures(
@@ -51,6 +52,7 @@ async def destroy_worker(
     *,
     queue: JobQueue,
     rate_limiter: RateLimiter,
+    session_store: SessionStore,
     session_id: str,
     worker_id: str | None = None,
 ) -> str:
@@ -65,6 +67,11 @@ async def destroy_worker(
     infrastructure. Then it rate-limits the chaos action and publishes a ``destroy`` command on
     ``ql:control``; the autoscaler (the only process holding the Docker socket) carries it out,
     leaving the registry entry stale so the reaper recovers the worker's in-flight job.
+
+    The acting guest is resolved server-side from ``session_id`` and stamped onto the command
+    (Epic 17b), so the autoscaler can attribute the resulting scaling line to that visitor's handle
+    and color — ``guest-teal destroyed worker-3`` — rather than the system. An expired session just
+    omits the attribution; the line then reads as a system action.
     """
     workers = await queue.list_workers()
     if worker_id is not None:
@@ -76,7 +83,12 @@ async def destroy_worker(
     if not target:
         raise NoWorkersError("[WARN] no workers to destroy")
     await rate_limiter.check_chaos(session_id)
-    await queue.publish_control_command({"command": "destroy", "worker_id": target})
+    command: dict[str, str] = {"command": "destroy", "worker_id": target}
+    identity = await session_store.get_identity(session_id)
+    if identity:
+        command["handle"] = identity["handle"]
+        command["color"] = identity["color"]
+    await queue.publish_control_command(command)
     return target
 
 

@@ -109,19 +109,34 @@ class QueueCounts(BaseModel):
     recovered: int
 
 
+class WorkerHealth(BaseModel):
+    """One worker's liveness for the grid: stable id, heartbeat freshness, and whether it's busy.
+
+    ``healthy`` is ``False`` once the heartbeat is stale, so the grid can paint a destroyed/crashed
+    worker as dying; ``busy`` distinguishes a worker running a job from an idle one.
+    """
+
+    id: str
+    healthy: bool
+    busy: bool
+
+
 class MetricsResponse(BaseModel):
     """The queue's aggregate vitals returned by ``GET /api/metrics`` (Epic 10c).
 
     ``counts`` is the live per-state tally; ``queue_depth`` is how many jobs are waiting on the
     ready queue right now (read straight from the list, the authoritative depth); ``worker_count``
-    is how many workers are registered in ``ql:workers``. The metrics tick pushes this same shape
-    over ``WS /ws`` as a ``{"type": "metrics", ...}`` frame, so the pulled snapshot and the live
-    tick agree.
+    is how many workers are registered in ``ql:workers``; ``unhealthy_worker_count`` is how many of
+    those have a stale heartbeat; ``workers`` is the per-worker detail (id + liveness) the grid
+    renders each cell from. The metrics tick pushes this same shape over ``WS /ws`` as a
+    ``{"type": "metrics", ...}`` frame, so the pulled snapshot and the live tick agree.
     """
 
     counts: QueueCounts
     queue_depth: int
     worker_count: int
+    unhealthy_worker_count: int
+    workers: list[WorkerHealth]
 
 
 class InjectFailuresRequest(BaseModel):

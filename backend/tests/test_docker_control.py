@@ -62,7 +62,8 @@ def test_kill_worker_gets_and_force_removes_the_container():
     container = MagicMock()
     client.containers.get.return_value = container
 
-    control.kill_worker("worker-abc123")
+    # Removing a real container reports the kill (True), so the caller can tell it from a no-op.
+    assert control.kill_worker("worker-abc123") is True
 
     client.containers.get.assert_called_once_with("worker-abc123")
     container.remove.assert_called_once_with(force=True)
@@ -72,8 +73,8 @@ def test_kill_worker_swallows_a_missing_container():
     control, client = make_control()
     client.containers.get.side_effect = NotFound("no such container")
 
-    # Already gone is success — no raise, and nothing to remove.
-    control.kill_worker("worker-gone")
+    # Already gone never raises, but reports False (a no-op) so a phantom destroy isn't logged.
+    assert control.kill_worker("worker-gone") is False
 
     client.containers.get.assert_called_once_with("worker-gone")
 

@@ -28,24 +28,62 @@ export interface LiveJob {
   complexity: number | null;
 }
 
+/** One registered worker's liveness, as the metrics frame reports it — the grid renders from these. */
+export interface WorkerHealth {
+  id: string;
+  /** `false` once the heartbeat is stale; the grid paints such a worker as dying (✗). */
+  healthy: boolean;
+  /** Whether the worker is running a job (vs idle). */
+  busy: boolean;
+}
+
+/**
+ * One activity-feed entry — the structured shape the backend now sends (Epic 17b), so the frontend
+ * can color each piece. `handle`/`color` are the acting guest (or the `autoscaler` system actor),
+ * resolved server-side; `null` when unattributed. `state` is the job-state word (drives its hue and
+ * the failures-only filter); `is_terminal` marks a dead job — retries exhausted. `line` is the flat
+ * readable sentence kept for screen readers and as a back-compat fallback.
+ */
+export interface FeedEntry {
+  time: string;
+  handle: string | null;
+  color: string | null;
+  action: string;
+  state: string | null;
+  attempts: number | null;
+  is_terminal: boolean;
+  line: string;
+}
+
 export interface LiveState {
   isConnected: boolean;
   counts: QueueCounts;
   queueDepth: number;
   workerCount: number;
+  /** Registered workers whose heartbeat is stale — rendered as dying (✗) cells in the grid. */
+  unhealthyWorkerCount: number;
+  /** Per-worker liveness for the grid, sorted by id; each cell is rendered from one of these. */
+  workers: WorkerHealth[];
   /** Active jobs only (terminal ones are pruned), keyed by job id. */
   jobs: Record<string, LiveJob>;
-  /** Recent activity lines, newest last, capped at FEED_CAP. */
-  feed: string[];
+  /** Recent activity entries, newest last, capped at FEED_CAP. */
+  feed: FeedEntry[];
   /** Recent queue-depth samples for the sparkline, capped at DEPTH_CAP. */
   depthHistory: number[];
 }
 
 export type Frame =
-  | { type: 'snapshot'; counts: QueueCounts; jobs: LiveJob[]; activity: string[] }
+  | { type: 'snapshot'; counts: QueueCounts; jobs: LiveJob[]; activity: FeedEntry[] }
   | { type: 'delta'; event: LiveJob }
-  | { type: 'metrics'; counts: QueueCounts; queue_depth: number; worker_count: number }
-  | { type: 'activity'; line: string };
+  | {
+      type: 'metrics';
+      counts: QueueCounts;
+      queue_depth: number;
+      worker_count: number;
+      unhealthy_worker_count: number;
+      workers: WorkerHealth[];
+    }
+  | ({ type: 'activity' } & FeedEntry);
 
 export type LiveAction =
   | { kind: 'connected' }
@@ -70,6 +108,8 @@ export const initialLiveState: LiveState = {
   counts: EMPTY_COUNTS,
   queueDepth: 0,
   workerCount: 0,
+  unhealthyWorkerCount: 0,
+  workers: [],
   jobs: {},
   feed: [],
   depthHistory: [],
@@ -121,10 +161,23 @@ function reduceFrame(state: LiveState, frame: Frame): LiveState {
         counts: frame.counts,
         queueDepth: frame.queue_depth,
         workerCount: frame.worker_count,
+        unhealthyWorkerCount: frame.unhealthy_worker_count,
+        workers: frame.workers,
         depthHistory: capEnd([...state.depthHistory, frame.queue_depth], DEPTH_CAP),
       };
-    case 'activity':
-      return { ...state, feed: capEnd([...state.feed, frame.line], FEED_CAP) };
+    case 'activity': {
+      const entry: FeedEntry = {
+        time: frame.time,
+        handle: frame.handle,
+        color: frame.color,
+        action: frame.action,
+        state: frame.state,
+        attempts: frame.attempts,
+        is_terminal: frame.is_terminal,
+        line: frame.line,
+      };
+      return { ...state, feed: capEnd([...state.feed, entry], FEED_CAP) };
+    }
     default:
       // An unrecognized frame type is ignored — the stream is untyped at the boundary.
       return state;
@@ -138,24 +191,28 @@ export interface WorkerCellModel {
 }
 
 /**
- * Derive the worker grid from the live state. No per-worker frame exists, so workers running an
- * in-flight job are read from the jobs map (status `running`, with their id) and the remaining
- * `workerCount` cells are shown idle/anonymous. The grid still visibly grows and shrinks as the
- * autoscaler reacts, and a named running worker can be destroyed by clicking its cell.
+ * Derive the worker grid from the live state — one cell per registered worker (`state.workers`),
+ * keyed by its id so cells stay stable as the fleet grows and shrinks.
+ *
+ * A worker reads as `destroyed` (a ✗ cell) when the backend reports it unhealthy (stale heartbeat)
+ * **or** when it is in `destroyedIds` — the ids the user just clicked destroy on, marked dead
+ * immediately so a kill shows the instant it is identified, before the heartbeat even lapses. The
+ * cell then clears on its own once the autoscaler replaces the worker and it drops out of
+ * `state.workers`. A `busy` worker is `running`; the rest are `idle`.
  */
-export function deriveWorkers(state: LiveState): WorkerCellModel[] {
-  const runningWorkerIds = [
-    ...new Set(
-      Object.values(state.jobs)
-        .filter((job) => job.state === 'running' && job.worker_id)
-        .map((job) => job.worker_id as string),
-    ),
-  ];
-  const total = Math.max(state.workerCount, runningWorkerIds.length);
-  return Array.from({ length: total }, (_, index) => {
-    const workerId = runningWorkerIds[index];
-    return workerId
-      ? { id: `worker-cell-${workerId}`, status: 'running' as WorkerStatus, workerId }
-      : { id: `worker-cell-idle-${index}`, status: 'idle' as WorkerStatus };
+export function deriveWorkers(
+  state: LiveState,
+  destroyedIds: ReadonlySet<string> = new Set(),
+): WorkerCellModel[] {
+  return state.workers.map((worker) => {
+    let status: WorkerStatus;
+    if (!worker.healthy || destroyedIds.has(worker.id)) {
+      status = 'destroyed';
+    } else if (worker.busy) {
+      status = 'running';
+    } else {
+      status = 'idle';
+    }
+    return { id: `worker-cell-${worker.id}`, status, workerId: worker.id };
   });
 }

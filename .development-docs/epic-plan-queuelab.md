@@ -1497,7 +1497,7 @@ explicit and acyclic.
     frontend service, nginx) — the spec + config are already in `frontend/e2e/`.
 - **Depends on:** Epic 14 (and exercises Epics 3–12 backends).
 
-## Epic 17b — Colored guest attribution & failure-resolution feed [UI]
+## Epic 17b — Colored guest attribution & failure-resolution feed [UI] — **COMPLETED** (46m)
 - **Intent:** Make the activity feed legible at a glance by who acted and what failed:
   guest handles render in their own color, every feed line is tinted to its actor's
   guest color so different visitors are visually separable, and a filter surfaces just
@@ -1535,16 +1535,7 @@ explicit and acyclic.
   but never *alone* conveys state (glyph + word stay); red stays reserved for failure/dead.
   Vitest covers the structured-frame reducer, the filter, and `FeedLine` coloring; backend
   Pytest covers the structured line, attribution, and the `is_terminal` tag.
-- **Open questions / decisions for stakeholders:**
-  - **Session→identity resolution.** Guest identity (Epic 5) is random/stateless and only
-    returned to the client — there is no server-side `session_id → handle/color` lookup yet.
-    Recommend a short-TTL Redis map written at session creation so any later action resolves
-    its actor server-side (spoof-resistant), vs. trusting a client-supplied handle. **Resolve
-    at plan-epic.**
-  - **Failures-only filter set.** Confirm the exact membership — `failed` + `retrying` +
-    terminal (`dead`); whether transient `failed`-then-`retrying` pairs both show.
-  - **Attribution reach.** Whether autoscaler-initiated (non-guest) scaling lines stay
-    unattributed/system-colored while only guest-triggered actions get a handle.
+- **Open questions / decisions for stakeholders:** none — resolved at plan time (below).
 - **Plan-time decisions (17b):**
   - **"dead" is terminal failure, not a new state** (stakeholder). No `JobState.DEAD`; the
     event carries `is_terminal` when retries are exhausted. Keeps the queue protocol, Lua
@@ -1552,6 +1543,29 @@ explicit and acyclic.
   - **One pane with a filter toggle**, not a separate second pane (stakeholder).
   - **Structured frame, frontend colors from backend-sent hex** — the event carries the
     resolved guest `color`, so the palette has one home and the frontend stops duplicating it.
+  - **Session→identity resolution = reuse the existing `SessionStore`** (resolved). The
+    open-question premise was stale: `services/session_store.py` *already* persists
+    `session_id → {handle, color}` in Redis with a TTL (the spoof-resistant short-TTL map the
+    question recommended building). Added `get_identity`; resolved server-side, never client-trusted.
+  - **`is_terminal` is derived, not Lua-emitted** (resolved). A `failed` state is only ever
+    published at retry-exhaustion (`nack.lua`/`reap.lua`), so `is_terminal = (state == "failed")`
+    in the formatter — honors "Lua untouched" and needs no protocol/`max_retries` change.
+  - **Failures-only filter = `failed` + `retrying`** (stakeholder). Both the will-retry
+    (`retrying`) and dead (`failed`, terminal) lines show; non-failure lines hide.
+  - **Autoscaler stays a reserved system actor** (stakeholder: "a color the users won't be").
+    Automatic scaling lines render as handle `autoscaler` in `--color-info` `#36c5ff` — outside
+    the six-name guest palette, so no visitor is ever that color; only guest-triggered actions
+    (job submit, chaos destroy) get a guest handle.
+- **Implementation notes:**
+  - **The `WS /ws` `activity` frame + snapshot `activity` are now structured** —
+    `{time, handle, color, action, state, attempts, is_terminal, line}` (flat `line` retained for
+    screen readers/back-compat). A later consumer of that frame reads the structured fields.
+  - **Palette homes:** guest colors live once in `app.services.identity::GUEST_COLORS` (backend
+    sends the hex — the frontend no longer carries them, Epic 13 nit closed); the system/autoscaler
+    actor color `#36c5ff` lives in `autoscaler_main::SYSTEM_ACTOR_*`.
+  - **Attribution carries `handle`+`color`, never persisted:** job lines resolve the actor from the
+    event's `session_id`; guest scaling lines are stamped onto the `ql:control` command and echoed
+    by the autoscaler via `ScalingDecision.actor_handle/color` — no `scaling_event` schema change.
 - **Depends on:** Epic 14 (live state hook & panes), Epic 12 (chaos), Epic 11d-1 (manual
   control), Epic 10d (activity feed), Epic 5 (guest identity).
 

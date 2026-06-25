@@ -1,4 +1,4 @@
-import type { JobState } from './StatusBadge';
+import type { JobState } from './stateBadges';
 
 /** A bar's fill color: a job-state phosphor, or the default terminal green. */
 export type BarState = JobState | 'default';

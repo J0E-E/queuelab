@@ -56,3 +56,5 @@ async def test_metrics_tick_broadcasts_vitals(queue, connection_manager, ws_app_
     assert metrics["counts"]["running"] == 1
     assert metrics["queue_depth"] == 1
     assert metrics["worker_count"] == 1
+    assert metrics["unhealthy_worker_count"] == 0
+    assert metrics["workers"] == [{"id": "worker-1", "healthy": True, "busy": True}]

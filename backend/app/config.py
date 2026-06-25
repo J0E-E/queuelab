@@ -97,12 +97,13 @@ class Settings(BaseSettings):
 
     # ---- Worker liveness / registry (TDD §5.4) ----
     # How often a worker refreshes its heartbeat in ``ql:workers``. Several times faster than
-    # the visibility timeout so the autoscaler (Epic 11) can spot a dead worker promptly.
-    worker_heartbeat_seconds: PositiveInt = 5
+    # the visibility timeout so the autoscaler (Epic 11) can spot a dead worker promptly. Kept
+    # short so a destroyed/crashed worker is detected and replaced within a few seconds.
+    worker_heartbeat_seconds: PositiveInt = 2
     # How stale a worker's last heartbeat may get before the autoscaler treats it as unhealthy
-    # and replaces it (Epic 11a). A few heartbeat intervals, so a single missed refresh doesn't
-    # condemn a healthy worker.
-    worker_unhealthy_after_seconds: PositiveInt = 15
+    # and replaces it (Epic 11a). Three heartbeat intervals, so a single missed refresh doesn't
+    # condemn a healthy worker, while a real death (e.g. a chaos destroy) is replaced in ~6s.
+    worker_unhealthy_after_seconds: PositiveInt = 6
 
     # ---- Worker image the autoscaler launches at runtime ----
     worker_image: str = "queuelab-worker:latest"

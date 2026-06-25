@@ -86,7 +86,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # buffer, and fans it out as an ``activity`` frame (Epic 10d). Like the others it runs for the
     # life of the process and is cancelled on shutdown.
     activity_feed_task = asyncio.create_task(
-        run_activity_feed(app.state.queue, app.state.connection_manager, app.state.activity_feed)
+        run_activity_feed(
+            app.state.queue,
+            app.state.connection_manager,
+            app.state.activity_feed,
+            app.state.session_store,
+        )
     )
     app.state.activity_feed_task = activity_feed_task
     # The scaling-feed subscriber is the autoscaler's twin of the activity subscriber: it listens

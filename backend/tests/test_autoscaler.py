@@ -165,11 +165,15 @@ def worker_with_heartbeat(heartbeat_ms: int, *, state: str = "busy") -> dict:
     return {"state": state, "current_job": None, "last_heartbeat": heartbeat_ms}
 
 
+# The staleness boundary is read from settings so these stay correct if the limit is retuned.
+_LIMIT_MS = make_settings().worker_unhealthy_after_seconds * 1000
+
+
 def test_replaces_a_worker_whose_heartbeat_is_stale():
     decision = decide(
         queue_depth=0,
         workers={"worker-1": worker_with_heartbeat(1_000_000)},
-        now_ms=1_000_000 + 20_000,  # 20s stale, past the 15s limit
+        now_ms=1_000_000 + _LIMIT_MS + 5_000,  # well past the unhealthy limit
     )
     assert decision.action == "replace"
     assert decision.worker_id == "worker-1"
@@ -179,7 +183,7 @@ def test_fresh_workers_are_not_replaced():
     decision = decide(
         queue_depth=0,
         workers={"worker-1": worker_with_heartbeat(1_000_000)},
-        now_ms=1_000_000 + 10_000,  # 10s old, within the 15s limit
+        now_ms=1_000_000 + _LIMIT_MS - 1_000,  # still within the unhealthy limit
     )
     assert decision.action == "no-op"
 
@@ -189,13 +193,13 @@ def test_staleness_boundary_is_exclusive():
     at_limit = decide(
         queue_depth=0,
         workers={"worker-1": worker_with_heartbeat(1_000_000)},
-        now_ms=1_000_000 + 15_000,
+        now_ms=1_000_000 + _LIMIT_MS,
     )
     assert at_limit.action == "no-op"
     past_limit = decide(
         queue_depth=0,
         workers={"worker-1": worker_with_heartbeat(1_000_000)},
-        now_ms=1_000_000 + 15_001,
+        now_ms=1_000_000 + _LIMIT_MS + 1,
     )
     assert past_limit.action == "replace"
 

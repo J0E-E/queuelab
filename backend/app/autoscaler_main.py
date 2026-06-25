@@ -37,6 +37,14 @@ from app.services.docker_control import DockerControl
 
 logger = logging.getLogger(__name__)
 
+# The autoscaler's own identity in the activity feed (Epic 17b). An automatic scaling line has no
+# guest behind it, so it is attributed to this reserved system actor instead. The color is the
+# Guide §3.3 ``--color-info`` cyan — deliberately outside the guest palette (app.services.identity
+# ``GUEST_COLORS``), so an automatic action is visually distinct from any visitor's and no guest is
+# ever assigned this color.
+SYSTEM_ACTOR_HANDLE = "autoscaler"
+SYSTEM_ACTOR_COLOR = "#36c5ff"
+
 
 class IdleTracker:
     """Tracks how long the queue has sat at or below the scale-down threshold.
@@ -188,8 +196,14 @@ def _command_to_decision(command: dict) -> ScalingDecision | None:
         if not isinstance(worker_id, str) or not worker_id:
             logger.warning("control consumer: destroy missing a worker_id; skipping: %s", command)
             return None
+        # The chaos endpoint stamps the triggering guest onto the command (Epic 17b); carry it
+        # through so the scaling line reads "guest-teal destroyed worker-3". Absent → unattributed.
         return ScalingDecision(
-            action="destroy", worker_id=worker_id, reason=f"chaos: destroy {worker_id}"
+            action="destroy",
+            worker_id=worker_id,
+            reason=f"chaos: destroy {worker_id}",
+            actor_handle=command.get("handle"),
+            actor_color=command.get("color"),
         )
     logger.warning("control consumer: unknown command; skipping: %s", command)
     return None
@@ -272,18 +286,24 @@ async def _apply_decision(
     their decision through here, so the two paths can't drift: a manual ``scale_up`` is clamped to
     the running cap exactly as the policy's is, and every executed action — automatic or manual —
     writes the same ``scaling_event`` audit row and publishes the same activity-feed line. A
-    ``no-op`` (including a ``scale_up`` the clamp suppressed at the cap) records nothing. Returns
-    the decision as actually executed (post-clamp), so a caller can see what ran.
+    ``no-op`` (including a ``scale_up`` the clamp suppressed at the cap) records nothing. So does a
+    ``destroy`` that killed nothing (the worker was already gone — :func:`_carry_out_decision`
+    reports it), so the feed never shows a phantom "destroyed" line. Returns the decision as
+    actually executed (post-clamp), so a caller can see what ran.
     """
     decision = _clamp_scale_up_to_running_cap(decision, docker_control, settings=settings)
     worker_count_after = _worker_count_after(decision, worker_count_before=worker_count_before)
-    await _carry_out_decision(decision, queue, docker_control)
-    if decision.action != "no-op":
+    took_effect = await _carry_out_decision(decision, queue, docker_control)
+    if decision.action != "no-op" and took_effect:
         event = {
             "action": decision.action,
             "worker_id": decision.worker_id,
             "reason": decision.reason,
             "worker_count_after": worker_count_after,
+            # Attribute the line to the triggering guest when there was one (a chaos destroy),
+            # else to the reserved system actor for an automatic policy decision (Epic 17b).
+            "handle": decision.actor_handle or SYSTEM_ACTOR_HANDLE,
+            "color": decision.actor_color or SYSTEM_ACTOR_COLOR,
         }
         # Record the durable audit row first (best-effort: a DB failure is logged with the full
         # event, not raised, so the action it executed is never silently lost), then publish the
@@ -323,8 +343,8 @@ def _clamp_scale_up_to_running_cap(
 
 async def _carry_out_decision(
     decision: ScalingDecision, queue: JobQueue, docker_control: DockerControl
-) -> None:
-    """Turn one decision into Docker calls, logging each action; ``no-op`` does nothing.
+) -> bool:
+    """Turn one decision into Docker calls, logging each action; return whether it took effect.
 
     A killed worker is also dropped from the registry: a force-removed container can't run its own
     graceful deregister, so without this its stale field would linger and re-trigger ``replace``
@@ -332,6 +352,13 @@ async def _carry_out_decision(
     new one up. ``destroy`` (chaos, Epic 12) deliberately does *not* deregister: leaving the stale
     registry field is what lets the reaper recover the worker's in-flight job and the next tick's
     ``replace`` stand up a fresh worker — that recovery is the whole point of the chaos button.
+
+    The return value matters only for ``destroy``: because it leaves the worker registered, an
+    already-destroyed worker stays a valid target for the ~heartbeat window until the reaper clears
+    it, so a repeated or random destroy can hit a container that is already gone. ``kill_worker``
+    reports that (``False``), and we propagate it so :func:`_apply_decision` suppresses the phantom
+    "destroyed" audit row and feed line. Every other action always took effect (a ``scale_down`` of
+    an already-gone worker is still a deliberate, audited trim), so they return ``True``.
     """
     if decision.action == "scale_up":
         for _ in range(decision.count):
@@ -347,8 +374,17 @@ async def _carry_out_decision(
         docker_control.start_worker()
         logger.info("autoscaler: replaced %s — %s", decision.worker_id, decision.reason)
     elif decision.action == "destroy":
-        docker_control.kill_worker(decision.worker_id)
-        logger.info("autoscaler: destroyed %s — %s", decision.worker_id, decision.reason)
+        killed = docker_control.kill_worker(decision.worker_id)
+        if killed:
+            logger.info("autoscaler: destroyed %s — %s", decision.worker_id, decision.reason)
+        else:
+            logger.info(
+                "autoscaler: destroy %s was a no-op (already gone) — %s",
+                decision.worker_id,
+                decision.reason,
+            )
+        return killed
+    return True
 
 
 def _worker_count_after(decision: ScalingDecision, *, worker_count_before: int) -> int:

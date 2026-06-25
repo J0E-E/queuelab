@@ -26,7 +26,12 @@ from app.queue.client import JobQueue
 from app.queue.protocol import SCALING_CHANNEL
 from app.realtime.connection_manager import ConnectionManager
 from app.realtime.subscriber import run_state_subscriber
-from app.services.activity_feed import ActivityFeed, format_scaling_line
+from app.services.activity_feed import (
+    ActivityFeed,
+    build_activity_entry,
+    current_time_label,
+    format_scaling_line,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +61,16 @@ async def _handle_message(
     """
     try:
         event = json.loads(message["data"])
-        line = format_scaling_line(event)
-        feed.record(line)
-        await manager.broadcast({"type": "activity", "line": line})
+        # The autoscaler stamps the acting actor onto the event (Epic 17b): the triggering guest's
+        # handle + color for a chaos destroy, or its own ``autoscaler`` identity for an automatic
+        # scale. We render whatever it sent; an older event without them stays unattributed.
+        entry = build_activity_entry(
+            format_scaling_line(event),
+            time=current_time_label(),
+            handle=event.get("handle"),
+            color=event.get("color"),
+        )
+        feed.record(entry)
+        await manager.broadcast({"type": "activity", **entry})
     except Exception:
         logger.exception("scaling feed: failed to handle a scaling event; skipping")

@@ -14,7 +14,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 
 from app.config import settings
-from app.dependencies import get_queue, get_rate_limiter
+from app.dependencies import get_queue, get_rate_limiter, get_session_store
 from app.models.schemas import (
     DestroyWorkerRequest,
     DestroyWorkerResponse,
@@ -24,6 +24,7 @@ from app.models.schemas import (
 from app.queue.client import JobQueue
 from app.services.chaos import destroy_worker, inject_failures
 from app.services.rate_limit import RateLimiter
+from app.services.session_store import SessionStore
 
 router = APIRouter(prefix="/api/chaos", tags=["chaos"])
 
@@ -46,11 +47,13 @@ async def destroy_worker_endpoint(
     request: DestroyWorkerRequest,
     queue: Annotated[JobQueue, Depends(get_queue)],
     rate_limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
+    session_store: Annotated[SessionStore, Depends(get_session_store)],
 ) -> DestroyWorkerResponse:
     """Hard-kill a worker (the given one, or a random live one) and let the queue recover it."""
     target = await destroy_worker(
         queue=queue,
         rate_limiter=rate_limiter,
+        session_store=session_store,
         session_id=request.session_id,
         worker_id=request.worker_id,
     )

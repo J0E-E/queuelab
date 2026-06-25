@@ -32,12 +32,18 @@ class ScalingDecision:
     the policy), and ``"no-op"`` is the do-nothing result that is never written as a row. ``count``
     is how many workers to add (set only for ``scale_up``); ``worker_id`` names the worker a
     ``scale_down``, ``replace``, or ``destroy`` targets (``None`` for fleet-level actions).
+
+    ``actor_handle`` / ``actor_color`` carry the guest who triggered a manual action (Epic 17b) so
+    the published scaling line can be attributed to them; both stay ``None`` for an automatic
+    policy decision, which the control loop renders as the system ``autoscaler`` actor instead.
     """
 
     action: str
     reason: str
     count: int = 0
     worker_id: str | None = None
+    actor_handle: str | None = None
+    actor_color: str | None = None
 
 
 def decide_scaling(

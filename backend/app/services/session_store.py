@@ -55,3 +55,16 @@ class SessionStore:
     async def get_handle(self, session_id: str) -> str | None:
         """Return the guest handle bound to this session, or ``None`` if unknown/expired."""
         return await self._redis.hget(session_key(session_id), "guest_handle")
+
+    async def get_identity(self, session_id: str) -> dict[str, str] | None:
+        """Return the ``{handle, color}`` bound to this session, or ``None`` if unknown/expired.
+
+        The activity feed (Epic 17b) resolves an action's acting guest from its ``session_id``
+        here — server-side, so the color attribution can't be spoofed by a client supplying its
+        own handle. Returns the issued handle and its hex color together, since the feed colors
+        both the handle and the whole line from them.
+        """
+        record = await self._redis.hgetall(session_key(session_id))
+        if not record:
+            return None
+        return {"handle": record["guest_handle"], "color": record["color"]}

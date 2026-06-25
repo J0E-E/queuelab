@@ -2,6 +2,7 @@ import { deriveWorkers } from '../hooks/liveState';
 import { useArchitecture } from '../hooks/useArchitecture';
 import { useChaos } from '../hooks/useChaos';
 import { useLiveState } from '../hooks/useLiveState';
+import { useOptimisticDestroys } from '../hooks/useOptimisticDestroys';
 import { useSession } from '../hooks/useSession';
 import { useSubmitJobs } from '../hooks/useSubmitJobs';
 import { ArchitecturePane } from '../panes/ArchitecturePane';
@@ -24,16 +25,19 @@ export function Dashboard() {
   const { submit, isSubmitting, error, accepted } = useSubmitJobs();
   const chaos = useChaos();
   const sessionId = identity?.session_id;
-  const workers = deriveWorkers(state);
+  const { destroyedIds, markDestroyed } = useOptimisticDestroys(state.workers.map((w) => w.id));
+  const workers = deriveWorkers(state, destroyedIds);
 
   function handleSubmit(fields: SubmitFields) {
     if (!sessionId) return;
     void submit({ session_id: sessionId, ...fields });
   }
 
-  function handleDestroy(workerId?: string) {
+  async function handleDestroy(workerId?: string) {
     if (!sessionId) return;
-    void chaos.destroy(sessionId, workerId);
+    // Mark the killed worker dead in the grid the moment the backend tells us which one it was.
+    const destroyed = await chaos.destroy(sessionId, workerId);
+    if (destroyed) markDestroyed(destroyed);
   }
 
   function handleInjectFailures() {
@@ -44,7 +48,14 @@ export function Dashboard() {
   return (
     <div id="dashboard" className="space-y-6">
       <p id="dashboard-guest" className="text-sm text-fg-dim">
-        you are {identity ? identity.guest_handle : 'connecting…'}
+        you are{' '}
+        {identity ? (
+          <span id="dashboard-guest-handle" style={{ color: identity.color }}>
+            {identity.guest_handle}
+          </span>
+        ) : (
+          'connecting…'
+        )}
       </p>
 
       <MetricsPane
@@ -71,7 +82,7 @@ export function Dashboard() {
           accepted={accepted}
           isDisabled={!sessionId}
         />
-        <FeedPane lines={state.feed} />
+        <FeedPane entries={state.feed} />
       </div>
 
       <ArchitecturePane sections={architecture} />

@@ -13,6 +13,8 @@ import asyncio
 import contextlib
 
 from app.autoscaler_main import (
+    SYSTEM_ACTOR_COLOR,
+    SYSTEM_ACTOR_HANDLE,
     IdleTracker,
     _handle_control_command,
     _run_one_tick,
@@ -30,12 +32,16 @@ class FakeDockerControl:
     def __init__(self) -> None:
         self.started = 0
         self.killed: list[str] = []
+        # Worker ids whose container is already gone, so a kill is a no-op (returns False) — the
+        # real ``kill_worker`` returns False on a Docker ``NotFound``. Empty by default.
+        self.already_gone: set[str] = set()
 
     def start_worker(self) -> None:
         self.started += 1
 
-    def kill_worker(self, worker_id: str) -> None:
+    def kill_worker(self, worker_id: str) -> bool:
         self.killed.append(worker_id)
+        return worker_id not in self.already_gone
 
     def list_workers(self) -> list[None]:
         """Stand in for the running containers: every start that hasn't since been killed.
@@ -411,6 +417,94 @@ async def test_control_destroy_kills_without_deregister(queue, redis_client, dat
     assert event.worker_id == "worker-1"
     assert event.reason == "chaos: destroy worker-1"
     assert event.worker_count_after == 1  # two workers minus the destroyed one
+
+
+async def test_control_destroy_of_an_already_gone_worker_records_nothing(
+    queue, redis_client, database, monkeypatch
+):
+    # Because destroy leaves the worker registered (so the reaper can recover it), an
+    # already-destroyed worker stays a valid target until the reaper clears it — a repeat or random
+    # destroy then hits a container that is already gone. That kill is a no-op, so no "destroyed"
+    # audit row or feed line is written (no phantom success).
+    docker_control = FakeDockerControl()
+    await _seed_worker(queue, "worker-1")
+    docker_control.already_gone = {"worker-1"}
+    published: list[dict] = []
+
+    async def _capture(event):
+        published.append(event)
+
+    monkeypatch.setattr(queue, "publish_scaling_event", _capture)
+
+    await _handle_control_command(
+        {"data": '{"command":"destroy","worker_id":"worker-1"}'},
+        queue,
+        docker_control,
+        database,
+        settings=settings,
+    )
+
+    # It still attempted the kill, but nothing was recorded or published — the line stays honest.
+    assert docker_control.killed == ["worker-1"]
+    assert await _scaling_events(database) == []
+    assert published == []
+
+
+async def test_control_destroy_attributes_the_triggering_guest(
+    queue, redis_client, database, monkeypatch
+):
+    # A destroy command carries the triggering guest (the chaos endpoint stamped it on); the
+    # published scaling line is attributed to that guest's handle + color (Epic 17b). We capture the
+    # published event rather than subscribe, keeping the test deterministic with no live socket.
+    docker_control = FakeDockerControl()
+    await _seed_worker(queue, "worker-1")
+    published: list[dict] = []
+
+    async def _capture(event):
+        published.append(event)
+
+    monkeypatch.setattr(queue, "publish_scaling_event", _capture)
+
+    await _handle_control_command(
+        {
+            "data": '{"command":"destroy","worker_id":"worker-1",'
+            '"handle":"guest-teal","color":"#2dd4bf"}'
+        },
+        queue,
+        docker_control,
+        database,
+        settings=settings,
+    )
+
+    (event,) = published
+    assert event["action"] == "destroy"
+    assert event["handle"] == "guest-teal"
+    assert event["color"] == "#2dd4bf"
+
+
+async def test_automatic_scale_is_attributed_to_the_system_actor(
+    queue, redis_client, database, make_job, monkeypatch
+):
+    # An automatic policy decision has no guest behind it, so its line is attributed to the reserved
+    # system actor — handle "autoscaler" in the §3.3 info color, outside the guest palette.
+    docker_control = FakeDockerControl()
+    for _ in range(settings.scale_up_threshold * 2):
+        await queue.enqueue(make_job())
+    published: list[dict] = []
+
+    async def _capture(event):
+        published.append(event)
+
+    monkeypatch.setattr(queue, "publish_scaling_event", _capture)
+
+    decision = await _run_one_tick(
+        queue, docker_control, IdleTracker(), database, settings=settings
+    )
+
+    assert decision.action == "scale_up"
+    (event,) = published
+    assert event["handle"] == SYSTEM_ACTOR_HANDLE == "autoscaler"
+    assert event["color"] == SYSTEM_ACTOR_COLOR == "#36c5ff"
 
 
 async def test_control_scale_up_over_cap_is_clamped_to_max_workers(queue, redis_client, database):

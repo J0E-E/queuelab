@@ -25,27 +25,43 @@ from app.queue.client import JobQueue
 from app.queue.protocol import STATE_CHANNEL
 from app.realtime.connection_manager import ConnectionManager
 from app.realtime.subscriber import run_state_subscriber
-from app.services.activity_feed import ActivityFeed, format_activity_line
+from app.services.activity_feed import (
+    ActivityFeed,
+    build_activity_entry,
+    current_time_label,
+    format_activity_line,
+)
+from app.services.session_store import SessionStore
 
 logger = logging.getLogger(__name__)
 
 
 async def run_activity_feed(
-    queue: JobQueue, manager: ConnectionManager, feed: ActivityFeed
+    queue: JobQueue,
+    manager: ConnectionManager,
+    feed: ActivityFeed,
+    session_store: SessionStore,
 ) -> None:
     """Subscribe to state-change events and fan a readable line out to every connected WS client.
 
     Runs until the task is cancelled (the api lifespan cancels it on shutdown). The subscribe loop
     and its re-subscribe-after-a-pause guard live in :func:`run_state_subscriber`; handling a
-    single event is itself best-effort (see :func:`_handle_message`).
+    single event is itself best-effort (see :func:`_handle_message`). The ``session_store`` lets the
+    handler attribute each line to the guest who submitted the job (Epic 17b).
     """
     await run_state_subscriber(
-        queue, STATE_CHANNEL, partial(_handle_message, manager, feed), name="activity feed"
+        queue,
+        STATE_CHANNEL,
+        partial(_handle_message, manager, feed, session_store),
+        name="activity feed",
     )
 
 
 async def _handle_message(
-    manager: ConnectionManager, feed: ActivityFeed, message: dict[str, Any]
+    manager: ConnectionManager,
+    feed: ActivityFeed,
+    session_store: SessionStore,
+    message: dict[str, Any],
 ) -> None:
     """Format one pub/sub message into a line, buffer it, and broadcast it; a bad one is skipped.
 
@@ -53,12 +69,34 @@ async def _handle_message(
     subscription dropped, re-subscribe". A non-:class:`Exception` like ``CancelledError`` is not
     caught here, so a shutdown cancel still propagates up to stop the loop. The line is recorded
     in the ring buffer *before* the broadcast, so it is already part of the recent history any
-    client that connects right after this event would be seeded with.
+    client that connects right after this event would be seeded with. The acting guest is resolved
+    server-side from the event's ``session_id`` (Epic 17b), so the color attribution can't be
+    spoofed and an expired session simply leaves the line unattributed.
     """
     try:
         event = json.loads(message["data"])
-        line = format_activity_line(event)
-        feed.record(line)
-        await manager.broadcast({"type": "activity", "line": line})
+        handle, color = await _resolve_actor(session_store, event.get("session_id"))
+        entry = build_activity_entry(
+            format_activity_line(event), time=current_time_label(), handle=handle, color=color
+        )
+        feed.record(entry)
+        await manager.broadcast({"type": "activity", **entry})
     except Exception:
         logger.exception("activity feed: failed to handle a state event; skipping")
+
+
+async def _resolve_actor(
+    session_store: SessionStore, session_id: str | None
+) -> tuple[str | None, str | None]:
+    """Resolve a state event's acting guest (the job's submitter) to a ``(handle, color)`` pair.
+
+    Server-side resolution from ``session_id`` (Epic 17b) so the attribution can't be spoofed by a
+    client. An absent ``session_id`` or an expired/unknown session resolves to ``(None, None)``,
+    leaving the line unattributed (rendered in the neutral system color by the frontend).
+    """
+    if not session_id:
+        return None, None
+    identity = await session_store.get_identity(session_id)
+    if not identity:
+        return None, None
+    return identity["handle"], identity["color"]

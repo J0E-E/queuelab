@@ -79,16 +79,19 @@ class DockerControl:
             filters={"label": f"{WORKER_LABEL}={WORKER_LABEL_VALUE}"}
         )
 
-    def kill_worker(self, worker_id: str) -> None:
-        """Stop and remove the worker container named ``worker_id``.
+    def kill_worker(self, worker_id: str) -> bool:
+        """Stop and remove the worker container named ``worker_id``; report whether one was removed.
 
         ``worker_id`` is the worker's id from ``ql:workers`` (its container hostname / short id),
         which ``containers.get`` resolves by id prefix. ``remove(force=True)`` stops and removes in
-        one call. A container that is already gone (``NotFound``) is treated as success, so a
-        double-kill or a worker that self-exited never raises.
+        one call. A container that is already gone (``NotFound``) never raises — a double-kill or a
+        self-exited worker is harmless — but it returns ``False`` so the caller can tell an actual
+        kill from a no-op. That lets a chaos ``destroy`` of a worker that is already gone (killed
+        but not yet reaped from the registry) avoid reporting a phantom "destroyed" line (Epic 12).
         """
         try:
             container = self._client.containers.get(worker_id)
         except NotFound:
-            return
+            return False
         container.remove(force=True)
+        return True

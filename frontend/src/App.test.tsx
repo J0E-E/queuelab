@@ -11,8 +11,14 @@ vi.mock('./hooks/useLiveState', () => ({
     counts: { queued: 12, running: 3, completed: 0, failed: 0, retrying: 0, recovered: 0 },
     queueDepth: 12,
     workerCount: 3,
+    unhealthyWorkerCount: 0,
+    workers: [
+      { id: 'worker-1', healthy: true, busy: true },
+      { id: 'worker-2', healthy: true, busy: false },
+      { id: 'worker-3', healthy: false, busy: false },
+    ],
     jobs: {},
-    feed: ['worker-1 started job#1'],
+    feed: [],
     depthHistory: [4, 8, 12],
   }),
 }));

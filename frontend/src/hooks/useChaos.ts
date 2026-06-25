@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { ApiError, destroyWorker, injectFailures } from '../lib/api';
 
@@ -10,7 +10,8 @@ export interface ChaosState {
 }
 
 export interface UseChaos extends ChaosState {
-  destroy: (sessionId: string, workerId?: string) => Promise<void>;
+  /** Destroy a worker; resolves to the worker id that was targeted, or null if the call failed. */
+  destroy: (sessionId: string, workerId?: string) => Promise<string | null>;
   inject: (sessionId: string, bias: number) => Promise<void>;
 }
 
@@ -24,6 +25,11 @@ export interface UseChaos extends ChaosState {
  */
 export function useChaos(): UseChaos {
   const [state, setState] = useState<ChaosState>({ success: null, warning: null });
+  // Pending timer that clears a rate-limit warning once its window passes. Held in a ref so a new
+  // warning can cancel the previous timer, and so it can be cleared on unmount.
+  const clearWarningTimer = useRef<ReturnType<typeof setTimeout>>();
+
+  useEffect(() => () => clearTimeout(clearWarningTimer.current), []);
 
   async function run(action: () => Promise<string>): Promise<void> {
     try {
@@ -33,16 +39,33 @@ export function useChaos(): UseChaos {
       const warning =
         error instanceof ApiError ? error.message : '[ERR] could not reach the server';
       setState((previous) => ({ ...previous, warning }));
+      // A rate-limit (429) notice self-clears once its `Retry-After` window passes — by then the
+      // action is allowed again, so the stale warning shouldn't linger. Only this exact warning is
+      // cleared, so a newer message that replaced it in the meantime is left untouched.
+      clearTimeout(clearWarningTimer.current);
+      if (error instanceof ApiError && error.status === 429 && error.retryAfterSeconds) {
+        clearWarningTimer.current = setTimeout(() => {
+          setState((previous) =>
+            previous.warning === warning ? { ...previous, warning: null } : previous,
+          );
+        }, error.retryAfterSeconds * 1000);
+      }
     }
   }
 
   return {
     ...state,
-    destroy: (sessionId, workerId) =>
-      run(async () => {
+    destroy: async (sessionId, workerId) => {
+      // Capture the targeted id so the caller can mark that worker dead in the grid at once; stays
+      // null when the call fails (the catch in `run` sets the warning instead).
+      let destroyedId: string | null = null;
+      await run(async () => {
         const { worker_id } = await destroyWorker(sessionId, workerId);
+        destroyedId = worker_id;
         return `[OK] destroyed ${worker_id}`;
-      }),
+      });
+      return destroyedId;
+    },
     inject: (sessionId, bias) =>
       run(async () => {
         const { bias: applied, ttl_seconds } = await injectFailures(sessionId, bias);

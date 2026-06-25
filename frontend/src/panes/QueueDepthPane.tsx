@@ -2,7 +2,8 @@ import { AsciiBar, type BarState } from '../components/AsciiBar';
 import { Pane } from '../components/Pane';
 import { PaneTitle } from '../components/PaneTitle';
 import { Sparkline } from '../components/Sparkline';
-import { StatusBadge, type JobState } from '../components/StatusBadge';
+import { StatusBadge } from '../components/StatusBadge';
+import type { JobState } from '../components/stateBadges';
 import type { QueueCounts } from '../hooks/liveState';
 
 export interface QueueDepthPaneProps {

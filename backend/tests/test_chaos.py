@@ -11,6 +11,7 @@ import asyncio
 import json
 
 from app.queue.protocol import CONTROL_CHANNEL
+from app.services.identity import GuestIdentity
 
 
 async def _next_message(pubsub):
@@ -73,7 +74,38 @@ async def test_destroy_worker_publishes_a_destroy_command(api_client, queue, red
     assert response.json()["worker_id"] == "worker-x"
     message = await _next_message(pubsub)
     assert message is not None
+    # An unknown session resolves to no identity, so the command carries no attribution.
     assert json.loads(message["data"]) == {"command": "destroy", "worker_id": "worker-x"}
+    await pubsub.aclose()
+
+
+async def test_destroy_worker_attributes_the_acting_guest(
+    api_client, queue, redis_client, session_store
+):
+    # With a known session, the destroy command carries the acting guest's handle + color so the
+    # autoscaler can render "guest-teal destroyed worker-3" (Epic 17b). Resolution is server-side,
+    # so a client can't spoof a handle it was not issued.
+    await queue.heartbeat("worker-z", state="busy", current_job="job-9")
+    await session_store.save(
+        GuestIdentity(session_id="sess-known", guest_handle="guest-teal", color="#2dd4bf")
+    )
+    pubsub = redis_client.pubsub()
+    await pubsub.subscribe(CONTROL_CHANNEL)
+    await _next_message(pubsub)  # drain the subscribe-confirmation frame
+
+    response = await api_client.post(
+        "/api/chaos/destroy-worker", json={"session_id": "sess-known", "worker_id": "worker-z"}
+    )
+
+    assert response.status_code == 200
+    message = await _next_message(pubsub)
+    assert message is not None
+    assert json.loads(message["data"]) == {
+        "command": "destroy",
+        "worker_id": "worker-z",
+        "handle": "guest-teal",
+        "color": "#2dd4bf",
+    }
     await pubsub.aclose()
 
 

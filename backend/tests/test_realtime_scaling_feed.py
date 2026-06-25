@@ -21,7 +21,7 @@ from httpx_ws import aconnect_ws
 
 
 def test_scale_up_line_names_the_new_count_and_reason():
-    line = format_scaling_line(
+    parts = format_scaling_line(
         {
             "action": "scale_up",
             "worker_id": None,
@@ -29,11 +29,14 @@ def test_scale_up_line_names_the_new_count_and_reason():
             "worker_count_after": 2,
         }
     )
-    assert line == "scaled up to 2 workers — queue_depth 12 > threshold 5 → +2"
+    assert parts.action == "scaled up to 2 workers — queue_depth 12 > threshold 5 → +2"
+    # A scaling action is not a job state, so it never matches the failures-only filter.
+    assert parts.state is None
+    assert parts.is_terminal is False
 
 
 def test_scale_down_line_names_the_new_count():
-    line = format_scaling_line(
+    parts = format_scaling_line(
         {
             "action": "scale_down",
             "worker_id": "worker-1",
@@ -41,11 +44,11 @@ def test_scale_down_line_names_the_new_count():
             "worker_count_after": 1,
         }
     )
-    assert line == "scaled down to 1 worker — queue idle"
+    assert parts.action == "scaled down to 1 worker — queue idle"
 
 
 def test_replace_line_names_the_worker():
-    line = format_scaling_line(
+    parts = format_scaling_line(
         {
             "action": "replace",
             "worker_id": "worker-stale",
@@ -53,20 +56,23 @@ def test_replace_line_names_the_worker():
             "worker_count_after": 1,
         }
     )
-    assert line == "replaced worker-stale — heartbeat stale"
+    assert parts.action == "replaced worker-stale — heartbeat stale"
 
 
 def test_destroy_action_renders_distinctly_from_scale_down():
     # Chaos destroy (Epic 12) reads differently from a graceful scale_down, so the grid can tell
     # a destroyed worker from one trimmed for idleness.
-    line = format_scaling_line({"action": "destroy", "worker_id": "worker-1", "reason": "chaos"})
-    assert line == "destroyed worker-1 — chaos"
+    parts = format_scaling_line({"action": "destroy", "worker_id": "worker-1", "reason": "chaos"})
+    assert parts.action == "destroyed worker-1 — chaos"
 
 
 def test_unknown_action_still_yields_a_sensible_line():
     # Nothing is ever dropped — an unrecognized action falls back to a plain label.
-    assert format_scaling_line({"action": "frobnicate", "reason": "chaos"}) == "frobnicate — chaos"
-    assert format_scaling_line({}) == "scaling"
+    assert (
+        format_scaling_line({"action": "frobnicate", "reason": "chaos"}).action
+        == "frobnicate — chaos"
+    )
+    assert format_scaling_line({}).action == "scaling"
 
 
 # ---- The subscriber (real Redis) ------------------------------------------------------
@@ -128,8 +134,42 @@ async def test_scaling_feed_streams_a_readable_line(
 
     assert frame["type"] == "activity"
     assert frame["line"] == "scaled up to 2 workers — queue_depth 12 > threshold 5 → +2"
-    # The same line was buffered, so a client connecting now would be seeded with it.
-    assert activity_feed.recent() == ["scaled up to 2 workers — queue_depth 12 > threshold 5 → +2"]
+    # This event was published without an actor, so it stays unattributed; an automatic scale is
+    # attributed to the system actor upstream by the autoscaler, not here.
+    assert frame["handle"] is None
+    # The same line was buffered as a structured entry, so a late-joiner is seeded with it.
+    assert [entry["line"] for entry in activity_feed.recent()] == [
+        "scaled up to 2 workers — queue_depth 12 > threshold 5 → +2"
+    ]
+
+
+async def test_scaling_line_carries_the_actors_handle_and_color(
+    queue, connection_manager, activity_feed, ws_app_client, redis_client
+):
+    # The autoscaler stamps the acting actor onto the scaling event (Epic 17b); the subscriber
+    # renders it, so a guest-triggered destroy shows that guest's handle, color, and a flat line
+    # that leads with the handle.
+    async with ws_app_client() as client, aconnect_ws("http://test/ws", client) as websocket:
+        snapshot = await websocket.receive_json()
+        assert snapshot["type"] == "snapshot"
+
+        async with _running_scaling_feed(queue, connection_manager, activity_feed):
+            await _wait_for_subscriber(redis_client)
+            await queue.publish_scaling_event(
+                {
+                    "action": "destroy",
+                    "worker_id": "worker-3",
+                    "reason": "chaos: destroy worker-3",
+                    "worker_count_after": 1,
+                    "handle": "guest-teal",
+                    "color": "#2dd4bf",
+                }
+            )
+            frame = await websocket.receive_json()
+
+    assert frame["handle"] == "guest-teal"
+    assert frame["color"] == "#2dd4bf"
+    assert frame["line"] == "guest-teal destroyed worker-3 — chaos: destroy worker-3"
 
 
 class _RecordingManager:

@@ -16,6 +16,21 @@ async def test_create_session_binds_identity_server_side(api_client, session_sto
     assert await session_store.get_handle(body["session_id"]) == body["guest_handle"]
 
 
+async def test_get_identity_returns_the_handle_and_color(api_client, session_store):
+    # The activity feed (Epic 17b) resolves both the handle and its color from the session id,
+    # server-side, to attribute and tint a guest's lines.
+    response = await api_client.post("/api/session")
+    body = response.json()
+
+    identity = await session_store.get_identity(body["session_id"])
+    assert identity == {"handle": body["guest_handle"], "color": body["color"]}
+
+
+async def test_get_identity_is_none_for_an_unknown_session(session_store):
+    # An expired or never-issued session resolves to nothing, so its line stays unattributed.
+    assert await session_store.get_identity("never-issued") is None
+
+
 async def test_create_session_is_rate_limited_per_ip(api_client):
     first = await api_client.post("/api/session")
     assert first.status_code == 200

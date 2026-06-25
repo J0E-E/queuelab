@@ -1,6 +1,7 @@
 import {
   DEPTH_CAP,
   deriveWorkers,
+  type FeedEntry,
   FEED_CAP,
   initialLiveState,
   liveStateReducer,
@@ -20,6 +21,20 @@ function job(overrides: Partial<LiveJob> = {}): LiveJob {
   };
 }
 
+function feedEntry(overrides: Partial<FeedEntry> = {}): FeedEntry {
+  return {
+    time: '12:00:00',
+    handle: null,
+    color: null,
+    action: 'job-1 queued',
+    state: 'queued',
+    attempts: null,
+    is_terminal: false,
+    line: 'job-1 queued',
+    ...overrides,
+  };
+}
+
 describe('liveStateReducer', () => {
   it('tracks connection state', () => {
     const connected = liveStateReducer(initialLiveState, { kind: 'connected' });
@@ -28,18 +43,39 @@ describe('liveStateReducer', () => {
   });
 
   it('replaces state from a snapshot frame', () => {
+    const seeded = [feedEntry({ line: 'line-1' }), feedEntry({ line: 'line-2' })];
     const next = liveStateReducer(initialLiveState, {
       kind: 'frame',
       frame: {
         type: 'snapshot',
         counts: { queued: 5, running: 2, completed: 10, failed: 1, retrying: 0, recovered: 4 },
         jobs: [job({ job_id: 'job-a' }), job({ job_id: 'job-b' })],
-        activity: ['line-1', 'line-2'],
+        activity: seeded,
       },
     });
     expect(next.counts.queued).toBe(5);
     expect(Object.keys(next.jobs)).toEqual(['job-a', 'job-b']);
-    expect(next.feed).toEqual(['line-1', 'line-2']);
+    expect(next.feed).toEqual(seeded);
+  });
+
+  it('appends an attributed activity entry, keeping its handle and color', () => {
+    const next = liveStateReducer(initialLiveState, {
+      kind: 'frame',
+      frame: {
+        type: 'activity',
+        ...feedEntry({
+          handle: 'guest-teal',
+          color: '#2dd4bf',
+          action: 'destroyed worker-3',
+          state: null,
+          line: 'guest-teal destroyed worker-3',
+        }),
+      },
+    });
+    expect(next.feed).toHaveLength(1);
+    expect(next.feed[0].handle).toBe('guest-teal');
+    expect(next.feed[0].color).toBe('#2dd4bf');
+    expect(next.feed[0].action).toBe('destroyed worker-3');
   });
 
   it('upserts an active job on a delta and prunes it when terminal', () => {
@@ -64,10 +100,13 @@ describe('liveStateReducer', () => {
         counts: { queued: 3, running: 1, completed: 0, failed: 0, retrying: 0, recovered: 0 },
         queue_depth: 3,
         worker_count: 4,
+        unhealthy_worker_count: 1,
+        workers: [],
       },
     });
     expect(next.queueDepth).toBe(3);
     expect(next.workerCount).toBe(4);
+    expect(next.unhealthyWorkerCount).toBe(1);
     expect(next.depthHistory).toEqual([3]);
   });
 
@@ -76,11 +115,11 @@ describe('liveStateReducer', () => {
     for (let index = 0; index < FEED_CAP + 10; index += 1) {
       state = liveStateReducer(state, {
         kind: 'frame',
-        frame: { type: 'activity', line: `line-${index}` },
+        frame: { type: 'activity', ...feedEntry({ line: `line-${index}` }) },
       });
     }
     expect(state.feed).toHaveLength(FEED_CAP);
-    expect(state.feed[state.feed.length - 1]).toBe(`line-${FEED_CAP + 9}`);
+    expect(state.feed[state.feed.length - 1].line).toBe(`line-${FEED_CAP + 9}`);
 
     for (let index = 0; index < DEPTH_CAP + 10; index += 1) {
       state = liveStateReducer(state, {
@@ -90,6 +129,8 @@ describe('liveStateReducer', () => {
           counts: initialLiveState.counts,
           queue_depth: index,
           worker_count: 1,
+          unhealthy_worker_count: 0,
+          workers: [],
         },
       });
     }
@@ -107,22 +148,31 @@ describe('liveStateReducer', () => {
 });
 
 describe('deriveWorkers', () => {
-  it('shows running workers by id and fills the rest as idle cells', () => {
+  it('renders one cell per worker by status — running (busy), idle, and dying (unhealthy)', () => {
     const state: LiveState = {
       ...initialLiveState,
-      workerCount: 3,
-      jobs: {
-        'job-1': job({ job_id: 'job-1', state: 'running', worker_id: 'worker-1' }),
-        'job-2': job({ job_id: 'job-2', state: 'running', worker_id: 'worker-2' }),
-        'job-3': job({ job_id: 'job-3', state: 'queued', worker_id: null }),
-      },
+      workers: [
+        { id: 'worker-1', healthy: true, busy: true },
+        { id: 'worker-2', healthy: true, busy: false },
+        { id: 'worker-3', healthy: false, busy: false },
+      ],
     };
     const cells = deriveWorkers(state);
-    expect(cells).toHaveLength(3);
-    expect(cells.filter((cell) => cell.status === 'running').map((cell) => cell.workerId)).toEqual([
-      'worker-1',
-      'worker-2',
-    ]);
-    expect(cells.filter((cell) => cell.status === 'idle')).toHaveLength(1);
+    expect(cells.map((cell) => cell.workerId)).toEqual(['worker-1', 'worker-2', 'worker-3']);
+    expect(cells.map((cell) => cell.status)).toEqual(['running', 'idle', 'destroyed']);
+  });
+
+  it('marks an optimistically destroyed worker dead at once, even while still healthy', () => {
+    const state: LiveState = {
+      ...initialLiveState,
+      workers: [
+        { id: 'worker-1', healthy: true, busy: false },
+        { id: 'worker-2', healthy: true, busy: false },
+      ],
+    };
+    // worker-1 was just clicked: it reads as destroyed before its heartbeat has even gone stale.
+    const cells = deriveWorkers(state, new Set(['worker-1']));
+    expect(cells.find((cell) => cell.workerId === 'worker-1')?.status).toBe('destroyed');
+    expect(cells.find((cell) => cell.workerId === 'worker-2')?.status).toBe('idle');
   });
 });

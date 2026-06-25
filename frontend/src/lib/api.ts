@@ -45,6 +45,8 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /** Seconds until the caller may retry, from the `Retry-After` header on a 429; else undefined. */
+    readonly retryAfterSeconds?: number,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -57,9 +59,18 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     ...options,
   });
   if (!response.ok) {
-    throw new ApiError(response.status, await errorDetail(response));
+    throw new ApiError(response.status, await errorDetail(response), retryAfterSeconds(response));
   }
   return (await response.json()) as T;
+}
+
+function retryAfterSeconds(response: Response): number | undefined {
+  // The rate limiter sets `Retry-After` as a whole-second count. A non-numeric value (an HTTP date)
+  // is ignored — the caller then just leaves the warning up rather than guessing a window.
+  const header = response.headers.get('retry-after');
+  if (!header) return undefined;
+  const seconds = Number(header);
+  return Number.isFinite(seconds) ? seconds : undefined;
 }
 
 async function errorDetail(response: Response): Promise<string> {

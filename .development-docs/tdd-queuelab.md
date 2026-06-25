@@ -425,7 +425,10 @@ publishes a destroy command on `ql:control` → autoscaler (sole Docker-socket h
 `kill`s the container → in-flight job's claim (lease) runs out → the recovery sweep (reaper)
 puts it back on the queue (requeue) (`retrying`)
 → queue-depth policy may spawn a replacement → feed: `destroyed worker-3`, `scale-up +1`,
-`worker-4 online`.
+`worker-4 online`. A destroy deliberately leaves the worker registered (so the reaper can
+recover its in-flight job), so the worker stays a valid target until the reaper clears it; a
+repeat/random destroy that hits an already-gone container is a no-op and emits **no** feed
+line or audit row — `kill_worker` reports whether it actually removed a container.
 
 **Autoscale under load:** rising `ready` depth crosses `scale_up_threshold` → autoscaler
 runs a worker (`[·]` spawning → `[R]` running) → depth drains → idle workers pass
