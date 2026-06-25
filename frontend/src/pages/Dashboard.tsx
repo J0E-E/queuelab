@@ -1,6 +1,6 @@
-import { destroyWorker, injectFailures, updateConfig } from '../lib/api';
 import { deriveWorkers } from '../hooks/liveState';
 import { useArchitecture } from '../hooks/useArchitecture';
+import { useChaos } from '../hooks/useChaos';
 import { useLiveState } from '../hooks/useLiveState';
 import { useSession } from '../hooks/useSession';
 import { useSubmitJobs } from '../hooks/useSubmitJobs';
@@ -15,13 +15,14 @@ const CHAOS_BIAS = 0.5;
 
 /**
  * The live QueueLab dashboard route: a tmux-style grid of panes driven by the WebSocket state, with
- * the submit / scale / destroy / chaos controls wired to the backend (Guide §2 "one pane, one job").
+ * the submit / destroy / chaos controls wired to the backend (Guide §2 "one pane, one job").
  */
 export function Dashboard() {
   const identity = useSession();
   const state = useLiveState();
   const architecture = useArchitecture();
   const { submit, isSubmitting, error, accepted } = useSubmitJobs();
+  const chaos = useChaos();
   const sessionId = identity?.session_id;
   const workers = deriveWorkers(state);
 
@@ -32,21 +33,12 @@ export function Dashboard() {
 
   function handleDestroy(workerId?: string) {
     if (!sessionId) return;
-    void destroyWorker(sessionId, workerId).catch(() => undefined);
+    void chaos.destroy(sessionId, workerId);
   }
 
   function handleInjectFailures() {
     if (!sessionId) return;
-    void injectFailures(sessionId, CHAOS_BIAS).catch(() => undefined);
-  }
-
-  // Scaling nudges the autoscaler floor relative to the running fleet (no manual-scale endpoint).
-  function handleScaleUp() {
-    void updateConfig({ min_workers: state.workerCount + 1 }).catch(() => undefined);
-  }
-
-  function handleScaleDown() {
-    void updateConfig({ min_workers: Math.max(0, state.workerCount - 1) }).catch(() => undefined);
+    void chaos.inject(sessionId, CHAOS_BIAS);
   }
 
   return (
@@ -66,10 +58,10 @@ export function Dashboard() {
         <QueueDepthPane counts={state.counts} depthHistory={state.depthHistory} />
         <WorkersPane
           workers={workers}
-          onScaleUp={handleScaleUp}
-          onScaleDown={handleScaleDown}
           onDestroy={handleDestroy}
           onInjectFailures={handleInjectFailures}
+          chaosSuccess={chaos.success}
+          chaosWarning={chaos.warning}
         />
         <SubmitPane
           guestHandle={identity?.guest_handle}

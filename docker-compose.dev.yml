@@ -1,0 +1,66 @@
+# Local dev override — makes the stack actually serve so you can exercise it end to end at
+# http://localhost:9002.
+#
+# Usage (or just run the VS Code task "QueueLab: launch stack (localhost:9002)"):
+#   docker build -f worker/Dockerfile -t queuelab-worker:latest .   # the autoscaler spawns these
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+#   # open http://localhost:9002
+#
+# This is a DEV convenience, not the production deploy. Epic 19 wires the real path (the built
+# frontend behind nginx with TLS). Here the base compose's placeholder api command is replaced with
+# a real uvicorn (running Alembic first), the frontend runs a Vite dev server, and only :9002 is
+# published — the api/redis/postgres stay on the internal network, so nothing binds host :8000.
+
+services:
+  api:
+    # The base image ships only the app package, so mount Alembic to migrate on boot, then serve.
+    command:
+      - sh
+      - -c
+      - .venv/bin/alembic upgrade head && .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+    volumes:
+      - ./backend/alembic:/app/alembic:ro
+      - ./backend/alembic.ini:/app/alembic.ini:ro
+    environment:
+      DATABASE_URL: postgresql+psycopg://queuelab:change-me@postgres:5432/queuelab
+      REDIS_URL: redis://redis:6379/0
+
+  autoscaler:
+    # The base command uses the system `python`, which can't see the venv the image installs deps
+    # into; run the autoscaler through the venv interpreter instead.
+    command: [".venv/bin/python", "-m", "app.autoscaler_main"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://queuelab:change-me@postgres:5432/queuelab
+      REDIS_URL: redis://redis:6379/0
+      # The autoscaler spawns these worker containers; build the image before `up` (the script does).
+      WORKER_IMAGE: queuelab-worker:latest
+      # The compose project network the workers join so they can reach redis by hostname.
+      WORKER_NETWORK: queuelab_default
+      # Stamp the compose project on spawned workers so Docker Desktop nests them under the
+      # queuelab group instead of listing them loose at the top level.
+      WORKER_COMPOSE_PROJECT: queuelab
+
+  # The Vite dev server, proxying /api and /ws to the api over the internal network. Only this
+  # service publishes a host port (9002). A named volume keeps the container's own (Linux)
+  # node_modules so the Windows host node_modules is never mounted over it.
+  frontend:
+    image: node:20-alpine
+    working_dir: /app
+    command: sh -c "npm ci && npm run dev -- --host 0.0.0.0 --port 9002"
+    environment:
+      VITE_PROXY_TARGET: http://api:8000
+    volumes:
+      - ./frontend:/app
+      - queuelab-frontend-node-modules:/app/node_modules
+    ports:
+      - "9002:9002"
+    depends_on:
+      - api
+
+  # nginx is still unconfigured (Epic 19). Park it behind a profile so a plain `up` skips it.
+  nginx:
+    profiles:
+      - production
+
+volumes:
+  queuelab-frontend-node-modules:

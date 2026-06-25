@@ -8,7 +8,7 @@ vi.mock('./hooks/useSession', () => ({
 vi.mock('./hooks/useLiveState', () => ({
   useLiveState: () => ({
     isConnected: true,
-    counts: { queued: 12, running: 3, completed: 0, failed: 0, retrying: 0 },
+    counts: { queued: 12, running: 3, completed: 0, failed: 0, retrying: 0, recovered: 0 },
     queueDepth: 12,
     workerCount: 3,
     jobs: {},

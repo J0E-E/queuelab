@@ -16,7 +16,14 @@ from collections.abc import Awaitable, Callable
 from app.queue.protocol import DELAYED_KEY, LEASES_KEY, job_key, processing_key
 from app.reaper import run_reaper
 
-ALL_ZERO_COUNTS = {"queued": 0, "running": 0, "completed": 0, "failed": 0, "retrying": 0}
+ALL_ZERO_COUNTS = {
+    "queued": 0,
+    "running": 0,
+    "completed": 0,
+    "failed": 0,
+    "retrying": 0,
+    "recovered": 0,
+}
 
 # A tiny tick so the loop sweeps many times within a sub-second poll window.
 FAST_TICK_SECONDS = 0.02

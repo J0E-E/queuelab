@@ -6,7 +6,10 @@ requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
-    "redis>=5.2",
+    # Cap below 8.0: redis-py 8.0.0 hard-caps every blocking read at ~5s even with
+    # socket_timeout=None, so the worker's 5s claim poll and the pub/sub subscribers'
+    # idle listen() both raise TimeoutError and crash. 7.4.x honors the command timeout.
+    "redis>=5.2,<8",
     "sqlalchemy>=2.0",
     "alembic>=1.14",
     "psycopg[binary]>=3.2",

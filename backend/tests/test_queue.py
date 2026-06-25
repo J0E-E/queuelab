@@ -25,7 +25,14 @@ from app.queue.protocol import (
     processing_key,
 )
 
-ALL_ZERO_COUNTS = {"queued": 0, "running": 0, "completed": 0, "failed": 0, "retrying": 0}
+ALL_ZERO_COUNTS = {
+    "queued": 0,
+    "running": 0,
+    "completed": 0,
+    "failed": 0,
+    "retrying": 0,
+    "recovered": 0,
+}
 
 
 async def test_enqueue_then_claim_then_ack(queue, redis_client, make_job):
@@ -78,6 +85,25 @@ async def test_nack_retries_via_delayed_then_promotes(queue, redis_client, make_
     assert reclaimed is not None
     assert reclaimed.id == job.id
     assert reclaimed.attempts == 1
+
+
+async def test_ack_after_a_failed_attempt_counts_as_recovered(queue, redis_client, make_job):
+    # A job that fails once, then succeeds on a retry, is a "recovered" failure: it lands in both
+    # the cumulative `completed` total and the `recovered` subset, so the dashboard can show how
+    # many failures were ultimately retried-and-succeeded versus terminally failed.
+    job = make_job(max_retries=2)
+    await queue.enqueue(job)
+    await queue.claim("worker-1", timeout=1)
+    await queue.nack(job.id, "worker-1", "boom")
+
+    # Promote the retry back to the active queue, reclaim it, and let it succeed this time.
+    await redis_client.zadd(DELAYED_KEY, {job.id: 0})
+    await queue.promote_due_delayed()
+    reclaimed = await queue.claim("worker-2", timeout=1)
+    assert reclaimed is not None and reclaimed.attempts == 1
+    await queue.ack(job.id, "worker-2")
+
+    assert await queue.counts() == {**ALL_ZERO_COUNTS, "completed": 1, "recovered": 1}
 
 
 async def test_lease_expiry_requeues_dead_worker_job(queue, redis_client, make_job):
@@ -139,10 +165,11 @@ async def test_stale_ack_nack_from_superseded_worker_is_ignored(queue, redis_cli
     assert int(await redis_client.hget(job_key(job.id), "attempts")) == 1
     assert await queue.counts() == {**ALL_ZERO_COUNTS, "running": 1}
 
-    # The real holder can still complete it cleanly.
+    # The real holder can still complete it cleanly. The job failed once (the lease expiry) before
+    # this success, so it counts as a recovery as well as a completion.
     await queue.ack(job.id, "worker-fresh")
     assert await redis_client.hget(job_key(job.id), "state") == "completed"
-    assert await queue.counts() == {**ALL_ZERO_COUNTS, "completed": 1}
+    assert await queue.counts() == {**ALL_ZERO_COUNTS, "completed": 1, "recovered": 1}
 
 
 async def test_renew_lease_extends_the_deadline(queue, redis_client, make_job):

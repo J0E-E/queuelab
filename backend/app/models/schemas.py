@@ -96,8 +96,9 @@ class QueueCounts(BaseModel):
     """The live per-state job tallies from the queue's counts hash (Epic 10c).
 
     ``queued``/``running``/``retrying`` are point-in-time (jobs currently in that state);
-    ``completed``/``failed`` are cumulative lifetime totals that only ever climb. The fields
-    mirror the queue client's ``COUNT_FIELDS`` exactly.
+    ``completed``/``failed`` are cumulative lifetime totals that only ever climb. ``recovered`` is
+    a cumulative subset of ``completed`` — jobs that finished only after at least one failed attempt
+    (a retry or reaper recovery that succeeded). The fields mirror ``COUNT_FIELDS`` exactly.
     """
 
     queued: int
@@ -105,6 +106,7 @@ class QueueCounts(BaseModel):
     completed: int
     failed: int
     retrying: int
+    recovered: int
 
 
 class MetricsResponse(BaseModel):

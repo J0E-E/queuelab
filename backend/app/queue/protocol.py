@@ -110,18 +110,25 @@ class JobType(StrEnum):
     WEBHOOK = "webhook"
 
 
-# Field names inside the ``ql:counts`` hash. They mirror the state values exactly so a
+# Field names inside the ``ql:counts`` hash. The first five mirror the state values exactly so a
 # Lua script can adjust a count by name with one step (``HINCRBY ql:counts <state> ±1``,
 # which adds ±1 to a hash field). ``queued``,
 # ``running``, and ``retrying`` are live gauges (up and down); ``completed`` and
 # ``failed`` are cumulative lifetime totals that are never decremented (so a dashboard
 # read stays O(1) even after a job hash ages out via TTL).
+#
+# ``recovered`` is not a state — it is a cumulative tally of jobs that finished ``completed``
+# after at least one *failed* attempt (a nack retry or a reaper requeue that eventually
+# succeeded). ack.lua bumps it when it marks a job completed with ``attempts > 0``, so the
+# dashboard can show how many failures were ultimately recovered. It is a subset of
+# ``completed``, never decremented.
 COUNT_FIELDS: tuple[str, ...] = (
     JobState.QUEUED.value,
     JobState.RUNNING.value,
     JobState.COMPLETED.value,
     JobState.FAILED.value,
     JobState.RETRYING.value,
+    "recovered",
 )
 
 

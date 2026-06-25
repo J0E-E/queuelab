@@ -110,6 +110,11 @@ class Settings(BaseSettings):
     # the ``redis`` (and ``postgres``) compose service by hostname. Defaults to Compose's implicit
     # project network; override if the compose project name differs.
     worker_network: str = "queuelab_default"
+    # The Compose project name the autoscaler stamps on each spawned worker
+    # (``com.docker.compose.project``) so Docker Desktop nests the runtime workers under the same
+    # group as the rest of the stack instead of listing them loose at the top level. Defaults to the
+    # project name Compose derives from this repo's directory; override if it differs.
+    worker_compose_project: str = "queuelab"
 
     @model_validator(mode="after")
     def check_worker_bounds(self) -> "Settings":

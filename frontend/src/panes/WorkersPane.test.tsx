@@ -9,21 +9,17 @@ const WORKERS: WorkerCellModel[] = [
 ];
 
 function renderPane(overrides: Partial<Parameters<typeof WorkersPane>[0]> = {}) {
-  const onScaleUp = vi.fn();
-  const onScaleDown = vi.fn();
   const onDestroy = vi.fn();
   const onInjectFailures = vi.fn();
   render(
     <WorkersPane
       workers={WORKERS}
-      onScaleUp={onScaleUp}
-      onScaleDown={onScaleDown}
       onDestroy={onDestroy}
       onInjectFailures={onInjectFailures}
       {...overrides}
     />,
   );
-  return { onScaleUp, onScaleDown, onDestroy, onInjectFailures };
+  return { onDestroy, onInjectFailures };
 }
 
 describe('WorkersPane', () => {
@@ -40,22 +36,39 @@ describe('WorkersPane', () => {
     expect(onDestroy.mock.calls[0][0]).toBeUndefined();
   });
 
-  it('scales via the scale controls', () => {
-    const { onScaleUp, onScaleDown } = renderPane();
-    fireEvent.click(document.getElementById('scale-up-button') as HTMLElement);
-    fireEvent.click(document.getElementById('scale-down-button') as HTMLElement);
-    expect(onScaleUp).toHaveBeenCalledOnce();
-    expect(onScaleDown).toHaveBeenCalledOnce();
-  });
-
   it('injects failures from the chaos control', () => {
     const { onInjectFailures } = renderPane();
     fireEvent.click(document.getElementById('inject-failures-button') as HTMLElement);
     expect(onInjectFailures).toHaveBeenCalledOnce();
   });
 
+  it('has no scale controls', () => {
+    renderPane();
+    expect(document.getElementById('scale-up-button')).not.toBeInTheDocument();
+    expect(document.getElementById('scale-down-button')).not.toBeInTheDocument();
+  });
+
   it('shows an empty state with no workers', () => {
     renderPane({ workers: [] });
     expect(document.getElementById('worker-grid-empty')).toBeInTheDocument();
+  });
+
+  it('renders the success and warning lines independently so one never replaces the other', () => {
+    renderPane({
+      chaosSuccess: '[OK] destroyed worker-1',
+      chaosWarning: '[WARN] rate limit: 1 chaos action / 10s',
+    });
+    const success = document.getElementById('worker-chaos-success');
+    const warning = document.getElementById('worker-chaos-warning');
+    expect(success).toHaveTextContent('[OK] destroyed worker-1');
+    expect(success).toHaveClass('text-ok');
+    expect(warning).toHaveTextContent('[WARN] rate limit: 1 chaos action / 10s');
+    expect(warning).toHaveClass('text-error');
+  });
+
+  it('omits the notice lines when there are none', () => {
+    renderPane();
+    expect(document.getElementById('worker-chaos-success')).not.toBeInTheDocument();
+    expect(document.getElementById('worker-chaos-warning')).not.toBeInTheDocument();
   });
 });

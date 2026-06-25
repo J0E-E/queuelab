@@ -28,6 +28,14 @@ from app.config import settings
 WORKER_LABEL = "com.queuelab.role"
 WORKER_LABEL_VALUE = "worker"
 
+# Compose project/service labels so Docker Desktop nests these runtime-spawned workers under the
+# queuelab stack (grouped like the api/redis/postgres containers) instead of listing them loose at
+# the top level. Docker Desktop groups by the project label; the service label gives them a tidy
+# "worker" heading within that group. These are cosmetic — the role label above is what list/kill
+# actually filter on.
+COMPOSE_PROJECT_LABEL = "com.docker.compose.project"
+COMPOSE_SERVICE_LABEL = "com.docker.compose.service"
+
 
 class DockerControl:
     """Spawns, lists, and kills worker containers on the local Docker daemon."""
@@ -48,7 +56,8 @@ class DockerControl:
         """Run a fresh worker container and return it.
 
         The container runs ``settings.worker_image`` detached, joins ``settings.worker_network`` so
-        it can reach the ``redis`` service by hostname, carries the worker label, and is handed its
+        it can reach the ``redis`` service by hostname, carries the worker label (plus the Compose
+        project/service labels so Docker Desktop nests it under the stack), and is handed its
         ``REDIS_URL`` (the only datastore a worker touches). Docker assigns the hostname (the short
         container id), which the worker reports as its id in ``ql:workers``.
         """
@@ -56,7 +65,11 @@ class DockerControl:
             settings.worker_image,
             detach=True,
             network=settings.worker_network,
-            labels={WORKER_LABEL: WORKER_LABEL_VALUE},
+            labels={
+                WORKER_LABEL: WORKER_LABEL_VALUE,
+                COMPOSE_PROJECT_LABEL: settings.worker_compose_project,
+                COMPOSE_SERVICE_LABEL: "worker",
+            },
             environment={"REDIS_URL": settings.redis_url},
         )
 

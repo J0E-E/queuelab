@@ -32,7 +32,7 @@ describe('liveStateReducer', () => {
       kind: 'frame',
       frame: {
         type: 'snapshot',
-        counts: { queued: 5, running: 2, completed: 10, failed: 1, retrying: 0 },
+        counts: { queued: 5, running: 2, completed: 10, failed: 1, retrying: 0, recovered: 4 },
         jobs: [job({ job_id: 'job-a' }), job({ job_id: 'job-b' })],
         activity: ['line-1', 'line-2'],
       },
@@ -61,7 +61,7 @@ describe('liveStateReducer', () => {
       kind: 'frame',
       frame: {
         type: 'metrics',
-        counts: { queued: 3, running: 1, completed: 0, failed: 0, retrying: 0 },
+        counts: { queued: 3, running: 1, completed: 0, failed: 0, retrying: 0, recovered: 0 },
         queue_depth: 3,
         worker_count: 4,
       },

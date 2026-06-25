@@ -7,7 +7,7 @@ describe('MetricsPane', () => {
   it('renders the live vitals in an aria-live region', () => {
     render(
       <MetricsPane
-        counts={{ ...EMPTY_COUNTS, completed: 40, failed: 3 }}
+        counts={{ ...EMPTY_COUNTS, completed: 40, failed: 3, recovered: 7 }}
         queueDepth={142}
         workerCount={8}
         isConnected
@@ -16,6 +16,8 @@ describe('MetricsPane', () => {
     expect(document.getElementById('metric-queue-depth')).toHaveTextContent('0142');
     expect(document.getElementById('metric-workers')).toHaveTextContent('8');
     expect(document.getElementById('metric-done')).toHaveTextContent('40');
+    expect(document.getElementById('metric-recovered')).toHaveTextContent('7');
+    expect(document.getElementById('metric-failed')).toHaveTextContent('3');
     expect(document.getElementById('metrics-counters')).toHaveAttribute('aria-live', 'polite');
     expect(document.getElementById('metrics-pane-title')).toHaveTextContent('● live');
   });

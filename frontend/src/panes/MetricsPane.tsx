@@ -19,6 +19,7 @@ export function MetricsPane({ counts, queueDepth, workerCount, isConnected }: Me
         <Counter id="metric-queue-depth" value={queueDepth} pad={4} label="queued" />
         <Counter id="metric-workers" value={workerCount} label="workers" />
         <Counter id="metric-done" value={counts.completed} label="done" />
+        <Counter id="metric-recovered" value={counts.recovered} label="recovered" />
         <Counter id="metric-failed" value={counts.failed} label="failed" />
       </div>
     </Pane>

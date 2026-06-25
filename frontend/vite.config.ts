@@ -6,15 +6,21 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   plugins: [react()],
   server: {
+    // Docker dev mounts the source from the Windows host; inotify events don't cross that
+    // bind-mount boundary, so Vite never sees edits and serves stale modules. Poll instead.
+    watch: { usePolling: true, interval: 200 },
     // Dev: proxy the REST API and the WebSocket to the backend so the app uses same-origin
     // relative URLs (/api, /ws) in every environment. Prod serves both same-origin via nginx
     // (Epic 19). Override the target with VITE_PROXY_TARGET when the backend runs elsewhere.
+    // `xfwd` adds X-Forwarded-For so the backend rate-limiter keys on the real client IP, not the
+    // proxy's — otherwise every visitor collapses into one shared per-IP bucket.
     proxy: {
       '/api': {
         target: process.env.VITE_PROXY_TARGET ?? 'http://localhost:8000',
         changeOrigin: true,
+        xfwd: true,
       },
-      '/ws': { target: process.env.VITE_PROXY_TARGET ?? 'http://localhost:8000', ws: true },
+      '/ws': { target: process.env.VITE_PROXY_TARGET ?? 'http://localhost:8000', ws: true, xfwd: true },
     },
   },
   test: {

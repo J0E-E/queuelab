@@ -38,6 +38,13 @@ redis.call('HSET', job_key, 'state', 'completed', 'completed_at', now_ms)
 redis.call('HDEL', job_key, 'worker_id')
 redis.call('HINCRBY', counts_key, 'running', -1)
 redis.call('HINCRBY', counts_key, 'completed', 1)
+-- A completion after one or more failed attempts is a recovery (a nack retry or a reaper requeue
+-- that eventually succeeded). Tally it separately so the dashboard can show how many failures were
+-- ultimately recovered — a cumulative subset of `completed`. attempts is bumped only by nack.lua /
+-- reap.lua, so attempts > 0 here means this job failed at least once before this success.
+if (tonumber(redis.call('HGET', job_key, 'attempts')) or 0) > 0 then
+  redis.call('HINCRBY', counts_key, 'recovered', 1)
+end
 -- Hot record ages out after 1h; the durable copy lives in Postgres (Epic 4).
 redis.call('EXPIRE', job_key, ttl_seconds)
 

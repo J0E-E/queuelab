@@ -6,27 +6,27 @@ import type { WorkerCellModel } from '../hooks/liveState';
 
 export interface WorkersPaneProps {
   workers: WorkerCellModel[];
-  /** Raise the autoscaler floor (PUT /api/config min_workers). */
-  onScaleUp: () => void;
-  /** Lower the autoscaler floor. */
-  onScaleDown: () => void;
   /** Destroy a worker — a specific id from a clicked cell, or undefined to let the API pick. */
   onDestroy: (workerId?: string) => void;
   /** Inject a burst of simulated failures (chaos). */
   onInjectFailures: () => void;
+  /** The last successful chaos action (`[OK]` line), or null. */
+  chaosSuccess?: string | null;
+  /** The last rejected chaos action (`[WARN]`/`[ERR]` line), or null. */
+  chaosWarning?: string | null;
 }
 
 /**
- * The workers pane: the live worker grid (Guide §8) plus scale and destroy controls. A running
- * worker's cell is a button that destroys that worker; the generic destroy button breaks a random
- * one. Scaling nudges the autoscaler floor via the config API (no manual-scale endpoint exists).
+ * The workers pane: the live worker grid (Guide §8) plus the chaos controls. A running worker's
+ * cell is a button that destroys that worker; the generic destroy button breaks a random one. The
+ * fleet size is driven by the autoscaler, so there is no manual scale control here.
  */
 export function WorkersPane({
   workers,
-  onScaleUp,
-  onScaleDown,
   onDestroy,
   onInjectFailures,
+  chaosSuccess = null,
+  chaosWarning = null,
 }: WorkersPaneProps) {
   return (
     <Pane id="workers-pane">
@@ -54,20 +54,37 @@ export function WorkersPane({
           )
         )}
       </div>
-      <div id="worker-controls" className="flex flex-wrap gap-3 pt-4">
-        <BracketButton id="scale-up-button" onClick={onScaleUp}>
-          + scale
-        </BracketButton>
-        <BracketButton id="scale-down-button" onClick={onScaleDown}>
-          - scale
-        </BracketButton>
-        <BracketButton id="destroy-worker-button" variant="destructive" onClick={() => onDestroy()}>
-          destroy worker
-        </BracketButton>
-        <BracketButton id="inject-failures-button" variant="destructive" onClick={onInjectFailures}>
-          inject failures
-        </BracketButton>
+      <div id="worker-chaos-controls" className="pt-4">
+        <p id="worker-chaos-label" className="text-lg font-bold text-error">
+          &gt; CHAOS Actions
+        </p>
+        <div id="worker-controls" className="flex flex-wrap gap-3 pt-2">
+          <BracketButton
+            id="destroy-worker-button"
+            variant="destructive"
+            onClick={() => onDestroy()}
+          >
+            destroy worker
+          </BracketButton>
+          <BracketButton
+            id="inject-failures-button"
+            variant="destructive"
+            onClick={onInjectFailures}
+          >
+            inject failures
+          </BracketButton>
+        </div>
       </div>
+      {chaosSuccess ? (
+        <p id="worker-chaos-success" className="pt-3 text-ok">
+          {chaosSuccess}
+        </p>
+      ) : null}
+      {chaosWarning ? (
+        <p id="worker-chaos-warning" className="pt-1 text-error">
+          {chaosWarning}
+        </p>
+      ) : null}
     </Pane>
   );
 }

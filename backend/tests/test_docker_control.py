@@ -10,6 +10,8 @@ from unittest.mock import MagicMock
 
 from app.config import settings
 from app.services.docker_control import (
+    COMPOSE_PROJECT_LABEL,
+    COMPOSE_SERVICE_LABEL,
     WORKER_LABEL,
     WORKER_LABEL_VALUE,
     DockerControl,
@@ -32,7 +34,11 @@ def test_start_worker_runs_image_with_network_label_and_redis_url():
         settings.worker_image,
         detach=True,
         network=settings.worker_network,
-        labels={WORKER_LABEL: WORKER_LABEL_VALUE},
+        labels={
+            WORKER_LABEL: WORKER_LABEL_VALUE,
+            COMPOSE_PROJECT_LABEL: settings.worker_compose_project,
+            COMPOSE_SERVICE_LABEL: "worker",
+        },
         environment={"REDIS_URL": settings.redis_url},
     )
     assert container is client.containers.run.return_value

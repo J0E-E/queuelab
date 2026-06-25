@@ -15,6 +15,8 @@ export interface QueueCounts {
   completed: number;
   failed: number;
   retrying: number;
+  /** Cumulative subset of `completed`: jobs that succeeded only after ≥1 failed attempt. */
+  recovered: number;
 }
 
 export interface LiveJob {
@@ -60,6 +62,7 @@ export const EMPTY_COUNTS: QueueCounts = {
   completed: 0,
   failed: 0,
   retrying: 0,
+  recovered: 0,
 };
 
 export const initialLiveState: LiveState = {

@@ -4,7 +4,10 @@ version = "0.1.0"
 description = "QueueLab worker — claims and runs simulated jobs from the custom Redis queue"
 requires-python = ">=3.12"
 dependencies = [
-    "redis>=5.2",
+    # Cap below 8.0: redis-py 8.0.0 hard-caps every blocking read at ~5s even with
+    # socket_timeout=None, so the worker's 5s claim poll raises TimeoutError and the
+    # worker crashes on its first idle poll. 7.4.x honors the command timeout.
+    "redis>=5.2,<8",
     # pydantic + pydantic-settings back the vendored `app.config` / `app.queue` (Epic 8b):
     # the Dockerfile copies the backend queue protocol and Settings into the image, and
     # `app.queue.client` builds JobRecords and reads `app.config.settings`.
