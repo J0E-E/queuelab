@@ -1,4 +1,4 @@
-import { act, renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiError, destroyWorker } from '../lib/api';
@@ -27,18 +27,29 @@ describe('useChaos', () => {
     expect(result.current.success).toContain('destroyed worker-9');
   });
 
-  it('auto-clears a rate-limit warning once the Retry-After window passes', async () => {
-    // A 429 with a 0.05s window so the test doesn't wait on a real rate-limit period.
-    vi.mocked(destroyWorker).mockRejectedValue(new ApiError(429, '[WARN] rate limit: 1 / 3s', 0.05));
-    const { result } = renderHook(() => useChaos());
+  it('counts a rate-limit warning down and clears it once the Retry-After window passes', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(destroyWorker).mockRejectedValue(new ApiError(429, '[WARN] rate limit: 1 / 3s', 3));
+      const { result } = renderHook(() => useChaos());
 
-    await act(async () => {
-      await result.current.destroy('sess');
-    });
-    expect(result.current.warning).toContain('rate limit');
+      await act(async () => {
+        await result.current.destroy('sess');
+      });
+      expect(result.current.warning).toContain('rate limit');
+      expect(result.current.warningSecondsLeft).toBe(3);
 
-    // After the window the notice clears itself — the action is allowed again, so it shouldn't linger.
-    await waitFor(() => expect(result.current.warning).toBeNull(), { timeout: 1000 });
+      // The window ticks down a second at a time.
+      act(() => vi.advanceTimersByTime(1000));
+      expect(result.current.warningSecondsLeft).toBe(2);
+
+      // At zero the notice clears itself — the action is allowed again, so it shouldn't linger.
+      act(() => vi.advanceTimersByTime(2000));
+      expect(result.current.warning).toBeNull();
+      expect(result.current.warningSecondsLeft).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('leaves a non-rate-limit warning up (no Retry-After, no auto-clear)', async () => {

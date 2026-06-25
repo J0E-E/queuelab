@@ -1,12 +1,15 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 
 import { ApiError, destroyWorker, injectFailures } from '../lib/api';
+import { useExpiringNotice } from './useExpiringNotice';
 
 export interface ChaosState {
   /** The last successful chaos action as an `[OK]` line, or null. */
   success: string | null;
   /** The last rejected chaos action as a `[WARN]`/`[ERR]` line, or null. */
   warning: string | null;
+  /** Seconds left on a rate-limit warning while it counts down, or null. */
+  warningSecondsLeft: number | null;
 }
 
 export interface UseChaos extends ChaosState {
@@ -22,39 +25,32 @@ export interface UseChaos extends ChaosState {
  * when the fleet is empty, a `429` when rate-limited — so without surfacing it a click looks like it
  * did nothing. Success and rejection are kept in separate slots so a rate-limit `[WARN]` never wipes
  * the last `[OK]` (or vice versa): each line updates on its own, and both can show at once.
+ *
+ * A rate-limit (429) warning counts its `Retry-After` window down and clears itself at zero — by
+ * then the action is allowed again, so the stale warning shouldn't linger.
  */
 export function useChaos(): UseChaos {
-  const [state, setState] = useState<ChaosState>({ success: null, warning: null });
-  // Pending timer that clears a rate-limit warning once its window passes. Held in a ref so a new
-  // warning can cancel the previous timer, and so it can be cleared on unmount.
-  const clearWarningTimer = useRef<ReturnType<typeof setTimeout>>();
-
-  useEffect(() => () => clearTimeout(clearWarningTimer.current), []);
+  const [success, setSuccess] = useState<string | null>(null);
+  const warning = useExpiringNotice();
 
   async function run(action: () => Promise<string>): Promise<void> {
     try {
-      const success = await action();
-      setState((previous) => ({ ...previous, success }));
+      setSuccess(await action());
     } catch (error) {
-      const warning =
+      const message =
         error instanceof ApiError ? error.message : '[ERR] could not reach the server';
-      setState((previous) => ({ ...previous, warning }));
-      // A rate-limit (429) notice self-clears once its `Retry-After` window passes — by then the
-      // action is allowed again, so the stale warning shouldn't linger. Only this exact warning is
-      // cleared, so a newer message that replaced it in the meantime is left untouched.
-      clearTimeout(clearWarningTimer.current);
       if (error instanceof ApiError && error.status === 429 && error.retryAfterSeconds) {
-        clearWarningTimer.current = setTimeout(() => {
-          setState((previous) =>
-            previous.warning === warning ? { ...previous, warning: null } : previous,
-          );
-        }, error.retryAfterSeconds * 1000);
+        warning.showWithCountdown(message, error.retryAfterSeconds);
+      } else {
+        warning.show(message);
       }
     }
   }
 
   return {
-    ...state,
+    success,
+    warning: warning.notice,
+    warningSecondsLeft: warning.secondsLeft,
     destroy: async (sessionId, workerId) => {
       // Capture the targeted id so the caller can mark that worker dead in the grid at once; stays
       // null when the call fails (the catch in `run` sets the warning instead).

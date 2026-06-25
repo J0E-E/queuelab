@@ -33,7 +33,19 @@ export function QueueDepthPane({ counts, depthHistory }: QueueDepthPaneProps) {
           </div>
         ))}
         <div id="queue-depth-trend" className="flex items-center gap-3 pt-2 text-fg-dim">
-          trend <Sparkline id="queue-depth-sparkline" values={depthHistory} />
+          trend
+          {/* Backstop: clip the glyph run to the pane, right-anchored so the newest buckets stay
+              visible. dir="rtl" makes overflow clip off the left (oldest); dir="ltr" inner keeps
+              the glyphs reading left-to-right. */}
+          <div
+            id="queue-depth-trend-clip"
+            dir="rtl"
+            className="min-w-0 flex-1 overflow-hidden whitespace-nowrap"
+          >
+            <span id="queue-depth-trend-inner" dir="ltr">
+              <Sparkline id="queue-depth-sparkline" values={depthHistory} />
+            </span>
+          </div>
         </div>
       </div>
     </Pane>

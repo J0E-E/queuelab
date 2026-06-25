@@ -17,6 +17,15 @@ describe('QueueDepthPane', () => {
     expect(document.getElementById('queue-depth-sparkline')).toHaveTextContent('6');
   });
 
+  it('clips the trend run to the pane, right-anchored so the newest buckets stay visible', () => {
+    render(<QueueDepthPane counts={EMPTY_COUNTS} depthHistory={[1, 4, 8, 6]} />);
+    const clip = document.getElementById('queue-depth-trend-clip');
+    expect(clip).toHaveClass('overflow-hidden', 'min-w-0');
+    // Right-anchored via the rtl-wrapper trick: rtl clip container, ltr inner.
+    expect(clip).toHaveAttribute('dir', 'rtl');
+    expect(document.getElementById('queue-depth-trend-inner')).toHaveAttribute('dir', 'ltr');
+  });
+
   it('does not divide by zero when the queue is empty', () => {
     render(<QueueDepthPane counts={EMPTY_COUNTS} depthHistory={[]} />);
     expect(document.getElementById('queue-depth-bar-queued')).toHaveTextContent('0%');

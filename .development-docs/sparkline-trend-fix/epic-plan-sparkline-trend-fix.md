@@ -15,7 +15,7 @@ never spills past its pane. Two settled decisions from the off-ramp grill:
 
 ---
 
-## Epic 1 — Spaced, non-overflowing trend sparkline
+## Epic 1 — Spaced, non-overflowing trend sparkline [UI] — **COMPLETED** (9m · 5.5M tok · 609k tok/min)
 
 - **Goal:** The queue-depth trend renders with clear separation between time buckets and
   always stays within its pane. Buckets are spaced via CSS tracking; the sparkline shows the
@@ -29,4 +29,6 @@ never spills past its pane. Two settled decisions from the off-ramp grill:
   letter-spacing), overflow handling (display cap + container clip), N (30), and clip anchor
   (newest) are all settled.
 - **Depends on:** none.
-- **Implementation notes:** _none yet_
+- **Implementation notes:** Sparkline letter-spacing is the deliberate, settled exception to
+  Guide §4.3 (which sets tracking `0` for non-headers) — scoped to the glyph run only, for bucket
+  legibility. The bucket cap is display-only; `DEPTH_CAP` (liveState.ts) is the durable store.

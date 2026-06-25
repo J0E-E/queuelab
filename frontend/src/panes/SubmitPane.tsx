@@ -19,6 +19,8 @@ export interface SubmitPaneProps {
   isSubmitting: boolean;
   /** System-voice `[ERR]`/`[WARN]` from the last rejected submit, or null. */
   error: string | null;
+  /** Seconds left on a rate-limit error while it counts down, or null. */
+  errorSecondsLeft?: number | null;
   /** Jobs accepted by the last successful submit, or null. */
   accepted: number | null;
   /** Disabled until a session is minted. */
@@ -36,6 +38,7 @@ export function SubmitPane({
   onSubmit,
   isSubmitting,
   error,
+  errorSecondsLeft = null,
   accepted,
   isDisabled,
 }: SubmitPaneProps) {
@@ -147,16 +150,28 @@ export function SubmitPane({
           </BracketButton>
         </div>
 
-        {error ? (
-          <p id="submit-error" className="text-error">
-            {error}
-          </p>
-        ) : null}
-        {accepted !== null ? (
-          <p id="submit-result" className="text-ok">
-            [OK] {accepted} jobs queued
-          </p>
-        ) : null}
+        {/* Reserve the submit-outcome space up front (min height for one line) so an `[ERR]`/`[OK]`
+            appearing or clearing — including a rate-limit notice that self-clears — never shifts the
+            layout below it. `aria-live` announces each outcome. */}
+        <div id="submit-status" aria-live="polite" className="min-h-6 pt-1">
+          {error ? (
+            <p id="submit-error" className="text-error">
+              {error}
+              {errorSecondsLeft !== null ? (
+                // aria-hidden so the per-second tick isn't re-announced by the live region above.
+                <span id="submit-error-countdown" aria-hidden="true" className="text-fg-dim">
+                  {' '}
+                  · retry in {errorSecondsLeft}s
+                </span>
+              ) : null}
+            </p>
+          ) : null}
+          {accepted !== null ? (
+            <p id="submit-result" className="text-ok">
+              [OK] {accepted} jobs queued
+            </p>
+          ) : null}
+        </div>
       </form>
     </Pane>
   );

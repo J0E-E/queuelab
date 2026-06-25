@@ -23,7 +23,13 @@ vi.mock('./hooks/useLiveState', () => ({
   }),
 }));
 vi.mock('./hooks/useSubmitJobs', () => ({
-  useSubmitJobs: () => ({ submit: vi.fn(), isSubmitting: false, error: null, accepted: null }),
+  useSubmitJobs: () => ({
+    submit: vi.fn(),
+    isSubmitting: false,
+    error: null,
+    errorSecondsLeft: null,
+    accepted: null,
+  }),
 }));
 vi.mock('./hooks/useArchitecture', () => ({
   useArchitecture: () => [{ key: 'queue', title: 'Custom Redis queue', body: 'raw primitives' }],

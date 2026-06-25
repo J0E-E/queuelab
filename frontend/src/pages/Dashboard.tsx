@@ -22,7 +22,7 @@ export function Dashboard() {
   const identity = useSession();
   const state = useLiveState();
   const architecture = useArchitecture();
-  const { submit, isSubmitting, error, accepted } = useSubmitJobs();
+  const { submit, isSubmitting, error, errorSecondsLeft, accepted } = useSubmitJobs();
   const chaos = useChaos();
   const sessionId = identity?.session_id;
   const { destroyedIds, markDestroyed } = useOptimisticDestroys(state.workers.map((w) => w.id));
@@ -73,12 +73,14 @@ export function Dashboard() {
           onInjectFailures={handleInjectFailures}
           chaosSuccess={chaos.success}
           chaosWarning={chaos.warning}
+          chaosWarningSecondsLeft={chaos.warningSecondsLeft}
         />
         <SubmitPane
           guestHandle={identity?.guest_handle}
           onSubmit={handleSubmit}
           isSubmitting={isSubmitting}
           error={error}
+          errorSecondsLeft={errorSecondsLeft}
           accepted={accepted}
           isDisabled={!sessionId}
         />

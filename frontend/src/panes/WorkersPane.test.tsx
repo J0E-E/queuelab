@@ -66,6 +66,22 @@ describe('WorkersPane', () => {
     expect(warning).toHaveClass('text-error');
   });
 
+  it('shows the seconds left on a rate-limit warning, hidden from assistive tech', () => {
+    renderPane({
+      chaosWarning: '[WARN] rate limit: 1 chaos action / 10s',
+      chaosWarningSecondsLeft: 7,
+    });
+    const countdown = document.getElementById('worker-chaos-countdown');
+    expect(countdown).toHaveTextContent('retry in 7s');
+    // aria-hidden so the per-second tick isn't re-announced by the live region.
+    expect(countdown).toHaveAttribute('aria-hidden', 'true');
+  });
+
+  it('omits the countdown when the warning is not counting down', () => {
+    renderPane({ chaosWarning: '[WARN] no workers to destroy', chaosWarningSecondsLeft: null });
+    expect(document.getElementById('worker-chaos-countdown')).not.toBeInTheDocument();
+  });
+
   it('omits the notice lines when there are none', () => {
     renderPane();
     expect(document.getElementById('worker-chaos-success')).not.toBeInTheDocument();

@@ -38,6 +38,28 @@ describe('SubmitPane', () => {
     expect(document.getElementById('submit-error')).toHaveTextContent('exceeds cap');
   });
 
+  it('shows the seconds left on a rate-limit error, hidden from assistive tech', () => {
+    renderPane({ error: '[WARN] rate limit: 1 / 3s', errorSecondsLeft: 2 });
+    const countdown = document.getElementById('submit-error-countdown');
+    expect(countdown).toHaveTextContent('retry in 2s');
+    // aria-hidden so the per-second tick isn't re-announced by the live region.
+    expect(countdown).toHaveAttribute('aria-hidden', 'true');
+  });
+
+  it('omits the countdown when the error is not counting down', () => {
+    renderPane({ error: '[ERR] --count exceeds cap (max 100)', errorSecondsLeft: null });
+    expect(document.getElementById('submit-error-countdown')).not.toBeInTheDocument();
+  });
+
+  it('reserves the outcome space so a message appearing or clearing never shifts the layout', () => {
+    renderPane({ error: null, accepted: null });
+    const status = document.getElementById('submit-status');
+    // Space is held up front (min height + aria-live) even with no message showing.
+    expect(status).toBeInTheDocument();
+    expect(status).toHaveAttribute('aria-live', 'polite');
+    expect(status?.className).toContain('min-h-6');
+  });
+
   it('disables execute until a session exists', () => {
     renderPane({ isDisabled: true });
     expect(document.getElementById('submit-execute')).toBeDisabled();

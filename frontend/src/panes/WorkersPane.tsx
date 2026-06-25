@@ -14,6 +14,8 @@ export interface WorkersPaneProps {
   chaosSuccess?: string | null;
   /** The last rejected chaos action (`[WARN]`/`[ERR]` line), or null. */
   chaosWarning?: string | null;
+  /** Seconds left on a rate-limit warning while it counts down, or null. */
+  chaosWarningSecondsLeft?: number | null;
 }
 
 /**
@@ -27,6 +29,7 @@ export function WorkersPane({
   onInjectFailures,
   chaosSuccess = null,
   chaosWarning = null,
+  chaosWarningSecondsLeft = null,
 }: WorkersPaneProps) {
   return (
     <Pane id="workers-pane">
@@ -90,6 +93,13 @@ export function WorkersPane({
         {chaosWarning ? (
           <p id="worker-chaos-warning" className="text-error">
             {chaosWarning}
+            {chaosWarningSecondsLeft !== null ? (
+              // aria-hidden so the per-second tick isn't re-announced by the live region.
+              <span id="worker-chaos-countdown" aria-hidden="true" className="text-fg-dim">
+                {' '}
+                · retry in {chaosWarningSecondsLeft}s
+              </span>
+            ) : null}
           </p>
         ) : null}
       </div>
