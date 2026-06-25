@@ -1497,6 +1497,64 @@ explicit and acyclic.
     frontend service, nginx) — the spec + config are already in `frontend/e2e/`.
 - **Depends on:** Epic 14 (and exercises Epics 3–12 backends).
 
+## Epic 17b — Colored guest attribution & failure-resolution feed [UI]
+- **Intent:** Make the activity feed legible at a glance by who acted and what failed:
+  guest handles render in their own color, every feed line is tinted to its actor's
+  guest color so different visitors are visually separable, and a filter surfaces just
+  the failure lifecycle (failed / retried / dead).
+- **Scope:**
+  - **Backend — structured, attributed feed.** Today a line is a single pre-baked string
+    (`services/activity_feed.py` → `{"type":"activity","line": …}`); the actor handle is
+    never carried. Change the feed to emit **structured parts** — `time`, `handle`, `color`
+    (the actor's guest hex), `action` body, `state`, `attempts`, and an `is_terminal` flag —
+    so the frontend can color each piece. `format_activity_line` / `format_scaling_line`
+    return these parts (keep a flat `line` alongside for the seed/back-compat and screen
+    readers).
+  - **Backend — guest attribution.** Thread the **acting guest** through guest-triggered
+    actions (chaos endpoints, Epic 12; manual-control channel, Epic 11d-1) so the published
+    event carries that session's `handle` + `color`. Resolve `session_id → identity`
+    server-side (the identity is generated at `POST /api/session`, Epic 5, but not currently
+    stored) — see open questions.
+  - **Backend — "dead" = terminal failure.** Tag a failure event `is_terminal` when retries
+    are exhausted (`attempts == max`), so the feed can tell a will-retry failure from a dead
+    one **without** adding a new `JobState` (decision below).
+  - **Frontend — color rendering.** Fold the structured `activity` frame into `LiveState`
+    (`hooks/liveState.ts`: `feed` becomes structured entries, not `string[]`); render each
+    line through the existing-but-orphaned **`FeedLine`** primitive (Epic 13) so the handle
+    shows in its guest color, the action in body color, and any state word in its state hue.
+    Promote the duplicated guest palette to a single source of truth (resolves the Epic 13
+    deferred nit: the hardcoded `GUEST_COLORS` hex map in `FeedLine.tsx`).
+  - **Frontend — failures-only toggle.** Add an **all / failures-only** toggle to `FeedPane`
+    (the chosen presentation — one pane, not a second pane) that filters to `failed` /
+    `retrying` / `dead` (terminal) lines.
+- **Verification:** A known guest handle renders in its palette color and its whole line is
+  tinted to that color; two distinct guests are visually separable in the feed; a
+  guest-triggered chaos/scale action shows that guest's handle (e.g. `guest-teal destroyed
+  worker-3`); the failures-only toggle hides non-failure lines and a retries-exhausted job
+  reads as dead (distinct from a will-retry failure). Honors Guide §3.5/§12: color reinforces
+  but never *alone* conveys state (glyph + word stay); red stays reserved for failure/dead.
+  Vitest covers the structured-frame reducer, the filter, and `FeedLine` coloring; backend
+  Pytest covers the structured line, attribution, and the `is_terminal` tag.
+- **Open questions / decisions for stakeholders:**
+  - **Session→identity resolution.** Guest identity (Epic 5) is random/stateless and only
+    returned to the client — there is no server-side `session_id → handle/color` lookup yet.
+    Recommend a short-TTL Redis map written at session creation so any later action resolves
+    its actor server-side (spoof-resistant), vs. trusting a client-supplied handle. **Resolve
+    at plan-epic.**
+  - **Failures-only filter set.** Confirm the exact membership — `failed` + `retrying` +
+    terminal (`dead`); whether transient `failed`-then-`retrying` pairs both show.
+  - **Attribution reach.** Whether autoscaler-initiated (non-guest) scaling lines stay
+    unattributed/system-colored while only guest-triggered actions get a handle.
+- **Plan-time decisions (17b):**
+  - **"dead" is terminal failure, not a new state** (stakeholder). No `JobState.DEAD`; the
+    event carries `is_terminal` when retries are exhausted. Keeps the queue protocol, Lua
+    scripts, Postgres, and counts untouched — this stays a presentation-leaning epic.
+  - **One pane with a filter toggle**, not a separate second pane (stakeholder).
+  - **Structured frame, frontend colors from backend-sent hex** — the event carries the
+    resolved guest `color`, so the palette has one home and the frontend stops duplicating it.
+- **Depends on:** Epic 14 (live state hook & panes), Epic 12 (chaos), Epic 11d-1 (manual
+  control), Epic 10d (activity feed), Epic 5 (guest identity).
+
 ## Epic 18 — Infrastructure (Terraform `/infra`)
 - **Intent:** Cheap, fully automated single-EC2 AWS provisioning as IaC.
 - **Scope:** `infra/` Terraform: VPC + subnet + security group (80/443), single EC2 +

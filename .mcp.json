@@ -1,12 +1,8 @@
 {
     "mcpServers":  {
                        "code-review-graph":  {
-                                                 "command":  "cmd",
-                                                 "args":  [
-                                                              "/c",
-                                                              "${USERPROFILE}\\.local\\bin\\code-review-graph.exe",
-                                                              "serve"
-                                                          ]
+                                                 "type":  "http",
+                                                 "url":  "http://127.0.0.1:5555/mcp"
                                              },
                        "memory-vault":  {
                                             "command":  "docker",
@@ -20,14 +16,8 @@
                                                      ]
                                         },
                        "playwright":  {
-                                          "command":  "docker",
-                                          "args":  [
-                                                       "run",
-                                                       "-i",
-                                                       "--rm",
-                                                       "--init",
-                                                       "mcr.microsoft.com/playwright/mcp:latest"
-                                                   ]
+                                          "type":  "http",
+                                          "url":  "http://localhost:8931/mcp"
                                       }
                    }
 }
