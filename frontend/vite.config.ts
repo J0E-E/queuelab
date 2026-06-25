@@ -22,5 +22,7 @@ export default defineConfig({
     globals: true,
     setupFiles: ['./src/test/setup.ts'],
     css: true,
+    // Vitest owns the src unit tests; the Playwright e2e specs (e2e/**) are run by Playwright.
+    include: ['src/**/*.test.{ts,tsx}'],
   },
 });

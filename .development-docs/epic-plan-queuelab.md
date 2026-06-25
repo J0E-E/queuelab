@@ -1467,7 +1467,7 @@ explicit and acyclic.
     section-map shape — extract a shared `NarrativePage` to DRY them; the active NavLink uses an
     underline where the Guide leans on inverted/brightened active state (§7.1/§12).
 
-## Epic 17 — Test suites wired into CI
+## Epic 17 — Test suites wired into CI — **COMPLETED** (6m)
 - **Intent:** Portfolio-grade, gated test coverage across the stack.
 - **Scope:** Consolidate/round out Pytest unit + integration (queue, retry,
   autoscaler policy, guardrails, real Redis/Postgres), Vitest (reducers/primitives),
@@ -1475,6 +1475,26 @@ explicit and acyclic.
   gates with ephemeral Redis/Postgres services.
 - **Verification:** CI runs green on all three suites; Playwright drives the full
   narrative against a Compose stack.
+- **Open questions / decisions for stakeholders:** none — resolved at plan time.
+- **Plan-time decisions (17):**
+  - **CI = a single GitHub Actions workflow** (`.github/workflows/ci.yml`) with two **gating** jobs
+    plus one **harness** job. `backend`: install `uv`, `uv sync`, `pytest` — the integration tests
+    spin their own ephemeral Redis/Postgres via **testcontainers** (the runner's Docker), so no GH
+    service containers are needed. `frontend`: `npm ci`, `lint`, `format:check`, `build`, `test:run`.
+  - **Playwright harness ships now; the live full-stack run activates with Epic 19.** The compose
+    stack is still a placeholder (the `api` runs a stub command, nginx is unconfigured, there is no
+    frontend service) — the runnable stack is Epic 19. So this epic adds the Playwright **config +
+    the narrative spec** (`submit → break → recover → scale`, driving the dashboard) and an `e2e` CI
+    job, but the job is wired to run **once Epic 19 makes the stack serve-able**; until then the
+    backend + frontend jobs are the gates. The spec compiles/lists now (`playwright test --list`).
+  - **No test rewrite.** "Consolidate/round out" = wire the existing, already-green suites into CI
+    and add the Playwright layer — the backend (queue/retry/autoscaler/guardrails, real datastores)
+    and frontend (reducer/primitives/panes) suites are already comprehensive; CI just runs them.
+- **Implementation notes:**
+  - **CI contract (Epic 19):** `.github/workflows/ci.yml` gates `backend` (uv + pytest/testcontainers)
+    and `frontend` (npm lint/build/vitest); the `e2e` Playwright job (narrative `submit → break →
+    recover → scale`) **activates when Epic 19 wires a runnable stack** (uvicorn api command, a
+    frontend service, nginx) — the spec + config are already in `frontend/e2e/`.
 - **Depends on:** Epic 14 (and exercises Epics 3–12 backends).
 
 ## Epic 18 — Infrastructure (Terraform `/infra`)
