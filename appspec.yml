@@ -1,0 +1,44 @@
+# QueueLab CodeDeploy spec (Epic 19). CodeDeploy (compute platform Server / IN_PLACE — see
+# infra/cicd.tf) reads appspec.yml from the artifact root. It copies the bundle to a stable
+# host directory, then runs the lifecycle hooks below in CodeDeploy's fixed order:
+#
+#   ApplicationStop -> DownloadBundle -> BeforeInstall -> Install -> AfterInstall
+#     -> ApplicationStart -> ValidateService
+#
+# We use ApplicationStop, BeforeInstall, ApplicationStart, ValidateService. Install copies the
+# files: block. Data volumes are NEVER torn down (compose down without -v), so Postgres/Redis
+# survive every redeploy.
+version: 0.0
+os: linux
+
+# Copy the whole artifact (compose files, hooks, prod.env.example, certbot script) to a stable
+# location the host keeps across deploys. The host's prod.env (the real secret) lives here too,
+# written once by the operator, and is left untouched by deploys.
+files:
+  - source: /
+    destination: /opt/queuelab
+
+hooks:
+  # Stop the previous stack BEFORE the new files overwrite it. Keeps data volumes.
+  ApplicationStop:
+    - location: scripts/deploy/application_stop.sh
+      timeout: 120
+      runas: root
+
+  # Log in to ECR and stamp the IMAGE_TAG/ECR_REGISTRY this revision should run.
+  BeforeInstall:
+    - location: scripts/deploy/before_install.sh
+      timeout: 300
+      runas: root
+
+  # Pull the new images and bring the stack up; run migrations; ensure TLS is in place.
+  ApplicationStart:
+    - location: scripts/deploy/application_start.sh
+      timeout: 600
+      runas: root
+
+  # Smoke-test the live stack: the health endpoint must answer through the running nginx.
+  ValidateService:
+    - location: scripts/deploy/validate_service.sh
+      timeout: 300
+      runas: root

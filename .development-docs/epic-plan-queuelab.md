@@ -1593,7 +1593,7 @@ explicit and acyclic.
     (CodeDeploy) are NOT created here — the CodeBuild/CodeDeploy resources reference them by
     convention (repo-root / agent default) and they arrive in Epic 19.
 
-## Epic 19 — Deploy plumbing & first live deploy
+## Epic 19 — Deploy plumbing & first live deploy — **COMPLETED** (61m)
 - **Intent:** The CI/CD shipping path and TLS, then the first live deployment of the
   end-to-end narrative.
 - **Scope:** `buildspec.yml` (build images, push to ECR, build React bundle),
@@ -1604,3 +1604,24 @@ explicit and acyclic.
 - **Verification:** Push to `main` → CodePipeline builds/pushes → CodeDeploy runs
   hooks; site serves over HTTPS; WS connects; live narrative works end to end.
 - **Depends on:** Epic 17, Epic 18.
+- **Implementation notes (Epic 19):** Shipped deploy PLUMBING only; the live AWS apply is a
+  manual operator step in `ops/deploy/DEPLOY.md` (not run here). Frontend = one baked nginx image
+  (`frontend/Dockerfile`, multi-stage Vite build → `nginx:1.27-alpine`) that also terminates TLS
+  and reverse-proxies `/api` `/ws` `/health` to `api:8000`; nginx envsubst fills `${DOMAIN}`.
+  TLS = certbot **sidecar** (compose, HTTP-01 webroot, shared `certs`+`webroot` volumes), NOT
+  host user_data — so Epic 18's `templatefile()` `$${...}` escaping gotcha does **not** apply here.
+  Chicken-and-egg solved by nginx minting a throwaway self-signed cert on start; certbot replaces
+  it; nginx self-reloads every 6h to pick up renewals (certbot has no docker socket to signal it).
+  Prod runs via `docker-compose.prod.yml` **override** (dev compose untouched; `build:` reset to
+  ECR `image:` refs). Backend is ONE image pushed to BOTH `queuelab-api` + `queuelab-autoscaler`
+  ECR repos (matches `infra/ecr.tf`). **Prod secret = host `/opt/queuelab/prod.env`** (only real
+  secret: `POSTGRES_PASSWORD`); `before_install` stamps `IMAGE_TAG`/`ECR_REGISTRY` per deploy;
+  SSM Parameter Store / Secrets Manager hardening noted as future in DEPLOY.md. Data volumes are
+  never torn down on redeploy (`compose down` without `-v`). The actual pipeline/CodeDeploy run and
+  live HTTPS/cert issuance could NOT run locally (no AWS) — deferred to the operator.
+  - **Migration path (cross-epic gotcha):** `backend/Dockerfile` bakes `alembic.ini` + the `alembic/`
+    tree (dev hid the need via bind-mount); the prod api compose `command` runs `alembic upgrade head`
+    before uvicorn and that shell command is the SOLE migration path (app code never self-migrates).
+    Deferred (optional, non-blocking): (a) readiness probe stays a `.venv/bin/python` socket connect
+    rather than `curl` — the slim image may lack curl; (b) `certbot renew`'s redundant `--webroot`
+    flags left as-is (harmless; `renew` reads the per-cert renewal config).

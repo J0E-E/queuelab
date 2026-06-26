@@ -1,0 +1,78 @@
+# QueueLab CodeBuild spec (Epic 19). CodeBuild reads buildspec.yml at the repo root by
+# convention (infra/cicd.tf). Runs on aws/codebuild/amazonlinux2-aarch64-standard:3.0
+# (ARM_CONTAINER, privileged) so it builds linux/arm64 images natively for the Graviton host.
+#
+# What it does:
+#   1. Log in to ECR.
+#   2. Build four arm64 images and push each tagged with BOTH the commit SHA and `latest`:
+#        ./backend           -> queuelab-api  AND  queuelab-autoscaler   (one shared image)
+#        worker/Dockerfile   -> queuelab-worker        (built from the repo ROOT)
+#        frontend/Dockerfile -> queuelab-frontend
+#   3. Emit the deploy artifact set CodeDeploy consumes (appspec.yml, scripts/deploy/, both
+#      compose files, prod.env.example).
+#
+# The four repo short-names (api/autoscaler/worker/frontend) match infra/ecr.tf exactly.
+
+version: 0.2
+
+env:
+  variables:
+    # The four ECR repo short-names. Full names are ${PROJECT}-<name> (PROJECT=queuelab).
+    PROJECT: "queuelab"
+
+phases:
+  pre_build:
+    commands:
+      - echo "Resolving account + region and logging in to ECR..."
+      - AWS_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+      - AWS_REGION="${AWS_REGION:-$AWS_DEFAULT_REGION}"
+      - ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+      # Tag every image with the commit SHA (immutable, used by the deploy) and `latest`.
+      - IMAGE_TAG="${CODEBUILD_RESOLVED_SOURCE_VERSION:-latest}"
+      - echo "Registry=${ECR_REGISTRY} Tag=${IMAGE_TAG}"
+      - aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
+  build:
+    commands:
+      - echo "Building linux/arm64 images..."
+
+      # --- Backend: ONE image, pushed to BOTH the api and autoscaler repos ---------------
+      - echo "Building backend (./backend) -> api + autoscaler ..."
+      - docker build --platform linux/arm64 -t "queuelab-backend:${IMAGE_TAG}" ./backend
+      - docker tag "queuelab-backend:${IMAGE_TAG}" "${ECR_REGISTRY}/${PROJECT}-api:${IMAGE_TAG}"
+      - docker tag "queuelab-backend:${IMAGE_TAG}" "${ECR_REGISTRY}/${PROJECT}-api:latest"
+      - docker tag "queuelab-backend:${IMAGE_TAG}" "${ECR_REGISTRY}/${PROJECT}-autoscaler:${IMAGE_TAG}"
+      - docker tag "queuelab-backend:${IMAGE_TAG}" "${ECR_REGISTRY}/${PROJECT}-autoscaler:latest"
+
+      # --- Worker: built from the repo ROOT (vendors the backend queue protocol) ----------
+      - echo "Building worker (worker/Dockerfile, root context) -> worker ..."
+      - docker build --platform linux/arm64 -f worker/Dockerfile -t "${ECR_REGISTRY}/${PROJECT}-worker:${IMAGE_TAG}" .
+      - docker tag "${ECR_REGISTRY}/${PROJECT}-worker:${IMAGE_TAG}" "${ECR_REGISTRY}/${PROJECT}-worker:latest"
+
+      # --- Frontend: baked nginx + SPA bundle --------------------------------------------
+      - echo "Building frontend (frontend/Dockerfile) -> frontend ..."
+      - docker build --platform linux/arm64 -f frontend/Dockerfile -t "${ECR_REGISTRY}/${PROJECT}-frontend:${IMAGE_TAG}" ./frontend
+      - docker tag "${ECR_REGISTRY}/${PROJECT}-frontend:${IMAGE_TAG}" "${ECR_REGISTRY}/${PROJECT}-frontend:latest"
+  post_build:
+    commands:
+      - echo "Pushing all images (SHA + latest) to ECR..."
+      - docker push --all-tags "${ECR_REGISTRY}/${PROJECT}-api"
+      - docker push --all-tags "${ECR_REGISTRY}/${PROJECT}-autoscaler"
+      - docker push --all-tags "${ECR_REGISTRY}/${PROJECT}-worker"
+      - docker push --all-tags "${ECR_REGISTRY}/${PROJECT}-frontend"
+      # Hand the resolved tag to the deploy: write it where the ApplicationStart hook reads it.
+      - echo "IMAGE_TAG=${IMAGE_TAG}" > image_tag.env
+      - echo "ECR_REGISTRY=${ECR_REGISTRY}" >> image_tag.env
+      - echo "Build complete."
+
+# Files CodeDeploy needs on the host. CodeDeploy reads appspec.yml from the artifact root, then
+# copies these per appspec's `files:` block and runs scripts/deploy/* as the lifecycle hooks.
+artifacts:
+  files:
+    - appspec.yml
+    - docker-compose.yml
+    - docker-compose.prod.yml
+    - image_tag.env
+    - scripts/deploy/**/*
+    - ops/deploy/certbot-entrypoint.sh
+    - ops/deploy/prod.env.example
+  discard-paths: no

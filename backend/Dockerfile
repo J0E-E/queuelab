@@ -17,5 +17,9 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
-# Application source (currently an empty package skeleton).
+# Application source plus the Alembic migration config + scripts. Production has no bind-mount
+# (the dev override mounts these); the prod api command runs `alembic upgrade head` on boot, so
+# alembic.ini and the alembic/ tree must be baked into the image.
 COPY app ./app
+COPY alembic.ini ./
+COPY alembic ./alembic

@@ -1,0 +1,187 @@
+name: queuelab
+services:
+  api:
+    command:
+      - sh
+      - -c
+      - .venv/bin/alembic upgrade head && .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: true
+      redis:
+        condition: service_healthy
+        required: true
+    environment:
+      CERTBOT_EMAIL: you@example.com
+      CERTBOT_STAGING: "0"
+      DATA_ROOT: /mnt/queuelab-data
+      DATABASE_URL: postgresql+psycopg://queuelab:CHANGE-ME-STRONG-PASSWORD@postgres:5432/queuelab
+      DOMAIN: queuelab.joeyshub.com
+      ECR_REGISTRY: 123456789012.dkr.ecr.us-east-1.amazonaws.com
+      IMAGE_TAG: latest
+      POSTGRES_PASSWORD: CHANGE-ME-STRONG-PASSWORD
+      REDIS_URL: redis://redis:6379/0
+      WORKER_COMPOSE_PROJECT: queuelab
+      WORKER_IMAGE: 123456789012.dkr.ecr.us-east-1.amazonaws.com/queuelab-worker:latest
+      WORKER_NETWORK: queuelab_default
+    expose:
+      - "8000"
+    image: 123456789012.dkr.ecr.us-east-1.amazonaws.com/queuelab-api:testsha
+    networks:
+      default: null
+    restart: unless-stopped
+  autoscaler:
+    command:
+      - .venv/bin/python
+      - -m
+      - app.autoscaler_main
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: true
+      redis:
+        condition: service_healthy
+        required: true
+    environment:
+      CERTBOT_EMAIL: you@example.com
+      CERTBOT_STAGING: "0"
+      DATA_ROOT: /mnt/queuelab-data
+      DATABASE_URL: postgresql+psycopg://queuelab:CHANGE-ME-STRONG-PASSWORD@postgres:5432/queuelab
+      DOMAIN: queuelab.joeyshub.com
+      ECR_REGISTRY: 123456789012.dkr.ecr.us-east-1.amazonaws.com
+      IMAGE_TAG: latest
+      POSTGRES_PASSWORD: CHANGE-ME-STRONG-PASSWORD
+      REDIS_URL: redis://redis:6379/0
+      WORKER_COMPOSE_PROJECT: queuelab
+      WORKER_IMAGE: 123456789012.dkr.ecr.us-east-1.amazonaws.com/queuelab-worker:latest
+      WORKER_NETWORK: queuelab_default
+    image: 123456789012.dkr.ecr.us-east-1.amazonaws.com/queuelab-autoscaler:testsha
+    networks:
+      default: null
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+        bind: {}
+  certbot:
+    depends_on:
+      nginx:
+        condition: service_started
+        required: true
+    entrypoint:
+      - /bin/sh
+      - /certbot-entrypoint.sh
+    environment:
+      CERTBOT_EMAIL: you@example.com
+      CERTBOT_STAGING: "0"
+      DATA_ROOT: /mnt/queuelab-data
+      DATABASE_URL: postgresql+psycopg://queuelab:CHANGE-ME-STRONG-PASSWORD@postgres:5432/queuelab
+      DOMAIN: queuelab.joeyshub.com
+      ECR_REGISTRY: 123456789012.dkr.ecr.us-east-1.amazonaws.com
+      IMAGE_TAG: latest
+      POSTGRES_PASSWORD: CHANGE-ME-STRONG-PASSWORD
+      REDIS_URL: redis://redis:6379/0
+      WORKER_COMPOSE_PROJECT: queuelab
+      WORKER_IMAGE: 123456789012.dkr.ecr.us-east-1.amazonaws.com/queuelab-worker:latest
+      WORKER_NETWORK: queuelab_default
+    image: certbot/certbot:latest
+    networks:
+      default: null
+    restart: unless-stopped
+    volumes:
+      - type: volume
+        source: certs
+        target: /etc/letsencrypt
+        volume: {}
+      - type: volume
+        source: webroot
+        target: /var/www/certbot
+        volume: {}
+      - type: bind
+        source: C:\Development\QueueLab\ops\deploy\certbot-entrypoint.sh
+        target: /certbot-entrypoint.sh
+        read_only: true
+        bind: {}
+  nginx:
+    depends_on:
+      api:
+        condition: service_started
+        required: true
+    environment:
+      DOMAIN: queuelab.joeyshub.com
+      NGINX_ENVSUBST_FILTER: DOMAIN
+    image: 123456789012.dkr.ecr.us-east-1.amazonaws.com/queuelab-frontend:testsha
+    networks:
+      default: null
+    ports:
+      - mode: ingress
+        target: 80
+        published: "80"
+        protocol: tcp
+      - mode: ingress
+        target: 443
+        published: "443"
+        protocol: tcp
+    restart: unless-stopped
+    volumes:
+      - type: volume
+        source: certs
+        target: /etc/letsencrypt
+        volume: {}
+      - type: volume
+        source: webroot
+        target: /var/www/certbot
+        volume: {}
+  postgres:
+    environment:
+      POSTGRES_DB: queuelab
+      POSTGRES_PASSWORD: dummy
+      POSTGRES_USER: queuelab
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U queuelab
+      timeout: 5s
+      interval: 5s
+      retries: 5
+    image: postgres:16-alpine
+    networks:
+      default: null
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: C:/Program Files/Git/mnt/queuelab-data/postgres
+        target: /var/lib/postgresql/data
+        bind: {}
+  redis:
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+    healthcheck:
+      test:
+        - CMD
+        - redis-cli
+        - ping
+      timeout: 5s
+      interval: 5s
+      retries: 5
+    image: redis:7-alpine
+    networks:
+      default: null
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: C:/Program Files/Git/mnt/queuelab-data/redis
+        target: /data
+        bind: {}
+networks:
+  default:
+    name: queuelab_default
+volumes:
+  certs:
+    name: queuelab_certs
+  webroot:
+    name: queuelab_webroot

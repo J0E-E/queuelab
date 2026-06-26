@@ -24,9 +24,14 @@ const SECTIONS: Section[] = [
     body: 'Destroy a worker mid-job and its lease lapses; the reaper requeues the job and the autoscaler stands up a replacement. Inject failures and the simulated work starts failing, then recovers on its own when the burst expires. The dashboard narrates the whole thing live.',
   },
   {
+    key: 'stack',
+    heading: 'The machine it runs on',
+    body: "All of this runs as one Docker Compose stack on a single EC2 cloud VM: Postgres keeps the durable state, Redis is the queue itself, the API serves the dashboard, and an autoscaler holds the Docker socket so it can spawn and kill real worker containers on its own. Nginx sits out front — terminating TLS, proxying the live WebSocket feed, and serving the static bundle. A CI/CD pipeline builds the images, pushes them, and deploys the stack. So the workers you watch appear and disappear aren't an animation — they're real containers starting and dying on a real machine.",
+  },
+  {
     key: 'payoff',
     heading: 'The point',
-    body: 'Distributed-systems mechanics are usually invisible. Here they are on screen, moving, multiplayer, and honest — queues filling, workers claiming, retries firing, the autoscaler reacting — so you can see how the parts actually behave under load and under chaos.',
+    body: 'Distributed-systems mechanics are usually invisible. Here they are on screen, moving, multiplayer, and honest — queues filling, workers claiming, retries firing, the autoscaler reacting — so you can see how the parts actually behave under load and under chaos — running live, on real infrastructure, right now.',
   },
 ];
 

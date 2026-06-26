@@ -1,0 +1,142 @@
+name: queuelab
+services:
+  api:
+    build:
+      context: C:\Development\QueueLab\backend
+      dockerfile: Dockerfile
+    command:
+      - sh
+      - -c
+      - .venv/bin/alembic upgrade head && .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: true
+      redis:
+        condition: service_healthy
+        required: true
+    environment:
+      DATABASE_URL: postgresql+psycopg://queuelab:change-me@postgres:5432/queuelab
+      REDIS_URL: redis://redis:6379/0
+    expose:
+      - "8000"
+    image: queuelab-backend:latest
+    networks:
+      default: null
+    volumes:
+      - type: bind
+        source: C:\Development\QueueLab\backend\alembic
+        target: /app/alembic
+        read_only: true
+        bind: {}
+      - type: bind
+        source: C:\Development\QueueLab\backend\alembic.ini
+        target: /app/alembic.ini
+        read_only: true
+        bind: {}
+  autoscaler:
+    command:
+      - .venv/bin/python
+      - -m
+      - app.autoscaler_main
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: true
+      redis:
+        condition: service_healthy
+        required: true
+    environment:
+      DATABASE_URL: postgresql+psycopg://queuelab:change-me@postgres:5432/queuelab
+      REDIS_URL: redis://redis:6379/0
+      WORKER_COMPOSE_PROJECT: queuelab
+      WORKER_IMAGE: queuelab-worker:latest
+      WORKER_NETWORK: queuelab_default
+    image: queuelab-backend:latest
+    networks:
+      default: null
+    volumes:
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+        bind: {}
+  frontend:
+    command:
+      - sh
+      - -c
+      - npm ci && npm run dev -- --host 0.0.0.0 --port 9002
+    depends_on:
+      api:
+        condition: service_started
+        required: true
+    environment:
+      VITE_PROXY_TARGET: http://api:8000
+    image: node:20-alpine
+    networks:
+      default: null
+    ports:
+      - mode: ingress
+        target: 9002
+        published: "9002"
+        protocol: tcp
+    volumes:
+      - type: bind
+        source: C:\Development\QueueLab\frontend
+        target: /app
+        bind: {}
+      - type: volume
+        source: queuelab-frontend-node-modules
+        target: /app/node_modules
+        volume: {}
+    working_dir: /app
+  postgres:
+    environment:
+      POSTGRES_DB: queuelab
+      POSTGRES_PASSWORD: dummy
+      POSTGRES_USER: queuelab
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U queuelab
+      timeout: 5s
+      interval: 5s
+      retries: 5
+    image: postgres:16-alpine
+    networks:
+      default: null
+    volumes:
+      - type: volume
+        source: postgres-data
+        target: /var/lib/postgresql/data
+        volume: {}
+  redis:
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+    healthcheck:
+      test:
+        - CMD
+        - redis-cli
+        - ping
+      timeout: 5s
+      interval: 5s
+      retries: 5
+    image: redis:7-alpine
+    networks:
+      default: null
+    volumes:
+      - type: volume
+        source: redis-data
+        target: /data
+        volume: {}
+networks:
+  default:
+    name: queuelab_default
+volumes:
+  postgres-data:
+    name: queuelab_postgres-data
+  queuelab-frontend-node-modules:
+    name: queuelab_queuelab-frontend-node-modules
+  redis-data:
+    name: queuelab_redis-data

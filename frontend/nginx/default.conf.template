@@ -1,0 +1,95 @@
+# QueueLab production nginx site (Epic 19).
+#
+# This template is processed by the stock nginx image's envsubst step at container start
+# (/etc/nginx/templates/*.template -> /etc/nginx/conf.d/*.conf), so ${DOMAIN} is filled from
+# the DOMAIN env var. Only ${DOMAIN} is substituted; nginx's own $variables are preserved by
+# listing the substitution allow-list via NGINX_ENVSUBST_FILTER (set in docker-compose.prod.yml).
+#
+# Two server blocks:
+#   1. :80  — serves the ACME HTTP-01 webroot challenge, redirects everything else to HTTPS.
+#   2. :443 — terminates TLS, serves the SPA with history-fallback, and reverse-proxies the
+#             same-origin API (/api), WebSocket (/ws), and health (/health) to api:8000.
+
+# --- HTTP: ACME challenge + redirect ----------------------------------------------------
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${DOMAIN};
+
+    # Certbot writes the HTTP-01 challenge token here; it MUST be reachable over plain HTTP.
+    # The path matches the certbot webroot (-w /var/www/certbot) — shared volume `webroot`.
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+        default_type "text/plain";
+    }
+
+    # Everything else goes to HTTPS.
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+# --- HTTPS: TLS termination + SPA + reverse proxy ---------------------------------------
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name ${DOMAIN};
+
+    # Certs live on the shared `certs` volume (certbot writes, nginx reads). Before the first
+    # real issue these point at a throwaway self-signed cert minted by the bootstrap script, so
+    # this server block can start. Certbot replaces them and reloads nginx on first issue/renew.
+    ssl_certificate     /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
+
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 1h;
+
+    # Keep serving the ACME challenge over HTTPS too so renewals work even if a client lands here.
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+        default_type "text/plain";
+    }
+
+    # REST API — same-origin /api/* proxied to the FastAPI service.
+    location /api/ {
+        proxy_pass http://api:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # WebSocket live feed — /ws upgraded to a long-lived connection.
+    location /ws {
+        proxy_pass http://api:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade           $http_upgrade;
+        proxy_set_header Connection        "upgrade";
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # WS frames can idle between deltas; don't let the proxy time them out.
+        proxy_read_timeout 1h;
+        proxy_send_timeout 1h;
+    }
+
+    # Liveness endpoint — proxied so the deploy ValidateService hook can curl it through the stack.
+    location = /health {
+        proxy_pass http://api:8000/health;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+    }
+
+    # The SPA bundle with client-side-routing fallback (any unknown path serves index.html).
+    root /usr/share/nginx/html;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

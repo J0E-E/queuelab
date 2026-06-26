@@ -1,0 +1,94 @@
+# QueueLab PRODUCTION override (Epic 19). Layered on top of docker-compose.yml:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# The base file declares the services with `build:` for local dev; here we swap each to the
+# ECR image built by CodeBuild and tagged with the commit SHA (IMAGE_TAG), give api/autoscaler
+# their real runtime commands, replace the placeholder nginx with the baked frontend image, and
+# add the certbot sidecar that issues + renews the TLS cert. The dev override
+# (docker-compose.dev.yml) is untouched — a plain `up` still runs the dev stack.
+#
+# All ${...} values come from the host's prod.env (see ops/deploy/prod.env.example), which the
+# CodeDeploy BeforeInstall hook materializes. `env_file: prod.env` here pushes those values INTO
+# the containers; the top-level ${...} interpolation (image tags, volumes) reads the same file
+# because compose loads ./.env — the deploy hook writes prod.env AND symlinks/copies it to .env.
+
+services:
+  postgres:
+    # Persist on the separate EBS data volume so data survives redeploys and instance replacement.
+    volumes:
+      - ${DATA_ROOT:-/mnt/queuelab-data}/postgres:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redis:
+    volumes:
+      - ${DATA_ROOT:-/mnt/queuelab-data}/redis:/data
+    restart: unless-stopped
+
+  api:
+    # The shared backend image from ECR (one image serves both api and autoscaler).
+    image: ${ECR_REGISTRY}/queuelab-api:${IMAGE_TAG}
+    # Pull from the registry instead of building on the host.
+    build: !reset null
+    env_file:
+      - path: prod.env
+        required: true
+    # Migrate then serve. The image installs deps into /app/.venv (uv) which is NOT on PATH,
+    # so call the venv binaries explicitly — same shape as the dev override, real prod command.
+    command:
+      - sh
+      - -c
+      - .venv/bin/alembic upgrade head && .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+    restart: unless-stopped
+
+  autoscaler:
+    image: ${ECR_REGISTRY}/queuelab-autoscaler:${IMAGE_TAG}
+    env_file:
+      - path: prod.env
+        required: true
+    # Run through the venv interpreter (the base command's bare `python` can't see the venv).
+    command: [".venv/bin/python", "-m", "app.autoscaler_main"]
+    environment:
+      # The autoscaler spawns these worker containers via the mounted docker.sock.
+      WORKER_IMAGE: ${WORKER_IMAGE}
+      # Workers join this compose network to reach redis/postgres by hostname. Compose names the
+      # default network <project>_default; the deploy runs with project "queuelab" (-p queuelab).
+      WORKER_NETWORK: ${WORKER_NETWORK:-queuelab_default}
+      WORKER_COMPOSE_PROJECT: ${WORKER_COMPOSE_PROJECT:-queuelab}
+    restart: unless-stopped
+
+  # The baked nginx+SPA image replaces the base placeholder nginx. Terminates TLS, serves the
+  # bundle, reverse-proxies /api /ws /health to api:8000.
+  nginx:
+    image: ${ECR_REGISTRY}/queuelab-frontend:${IMAGE_TAG}
+    environment:
+      # nginx envsubst fills ${DOMAIN} in the site template; restrict substitution to DOMAIN so
+      # nginx's own $variables (e.g. $host, $remote_addr) are preserved verbatim.
+      DOMAIN: ${DOMAIN}
+      NGINX_ENVSUBST_FILTER: "DOMAIN"
+    volumes:
+      # Shared with certbot: nginx reads the issued certs and serves the ACME challenge webroot.
+      - certs:/etc/letsencrypt
+      - webroot:/var/www/certbot
+    restart: unless-stopped
+
+  # TLS sidecar: issues the Let's Encrypt cert via HTTP-01 webroot on first run, then loops to
+  # renew ~twice daily. Reuses the same shared volumes as nginx (certs out, webroot for challenge).
+  certbot:
+    image: certbot/certbot:latest
+    depends_on:
+      - nginx
+    env_file:
+      - path: prod.env
+        required: true
+    volumes:
+      - certs:/etc/letsencrypt
+      - webroot:/var/www/certbot
+      - ./ops/deploy/certbot-entrypoint.sh:/certbot-entrypoint.sh:ro
+    entrypoint: ["/bin/sh", "/certbot-entrypoint.sh"]
+    restart: unless-stopped
+
+volumes:
+  # Issued certs (certbot writes, nginx reads) and the ACME challenge webroot, shared between them.
+  certs:
+  webroot:
