@@ -21,10 +21,10 @@ Settled in grilling (2026-06-26):
 - **Depends on:** none.
 - **Implementation notes:** Canonical logo asset at `frontend/public/queuelab-logo.svg` (square, served at `/queuelab-logo.svg`). **Epic 2** reuses this exact file as the portfolio card image — copy it into joeys-hub `public/images/`.
 
-## Epic 2 — Portfolio entry on joeys-hub
+## Epic 2 — Portfolio entry on joeys-hub — **COMPLETED** (5m21s)
 
 - **Goal:** A QueueLab card appears on the joeys-hub portfolio under "Scalable System Design MVPs" beside LinkShrink, with the Epic-1 logo as its image, short/fun system-design copy, and links to the live app and the repo.
 - **Rough scope:** joeys-hub `joeyshub/src/data/projectsDataset.js` (new project object in the `scalable-system-design-mvps` category) and `joeyshub/public/images/` (the logo-derived square image). Follows the existing project-object shape (`imageSrc`, `header`, `paragraph1-3`, `links[]`).
 - **Open questions / decisions for stakeholders:** none expected — category, copy angle, links, and "no demo caveat" are settled.
 - **Depends on:** Epic 1 — reuses the same logo asset as the card image (`imageSrc`), so the asset must exist first.
-- **Implementation notes:** _none yet_
+- **Implementation notes:** none — QueueLab card added to joeys-hub `scalable-system-design-mvps` (beside LinkShrink) with the Epic-1 logo at `joeyshub/public/images/queuelab-logo.svg`; lives in the joeys-hub repo (`development` branch), separate from this plan file.
