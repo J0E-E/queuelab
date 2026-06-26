@@ -45,6 +45,15 @@ describe('App routing', () => {
     expect(document.getElementById('nav-link-how-it-works')).toBeInTheDocument();
   });
 
+  it('shows the brand logo and a github link in the header', () => {
+    render(<App />);
+    expect(document.getElementById('app-logo')).toHaveAttribute('src', '/queuelab-logo.svg');
+    expect(document.getElementById('nav-link-github')).toHaveAttribute(
+      'href',
+      'https://github.com/J0E-E/queuelab',
+    );
+  });
+
   it('navigates to the explainer pages from the header', () => {
     render(<App />);
     fireEvent.click(document.getElementById('nav-link-how-it-works') as HTMLElement);

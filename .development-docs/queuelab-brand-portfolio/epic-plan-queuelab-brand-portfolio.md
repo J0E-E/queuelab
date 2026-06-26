@@ -13,13 +13,13 @@ Settled in grilling (2026-06-26):
 
 ---
 
-## Epic 1 — QueueLab logo & app brand wiring
+## Epic 1 — QueueLab logo & app brand wiring — **COMPLETED** (9m36s)
 
 - **Goal:** QueueLab gets a real visual identity: a hand-authored SVG logo in the app's CRT-green palette, shown in the navbar beside `[ QUEUELAB ]`, set as the browser favicon, and with a GitHub repo link added to the nav.
 - **Rough scope:** QueueLab `frontend/` — a new logo SVG asset, `src/Layout.tsx` (navbar mark + GitHub nav link), `index.html` (favicon `<link>`, currently absent). Keep within the existing Tailwind token system (`text-accent`, no hardcoded hex in components, no rounded corners).
 - **Open questions / decisions for stakeholders:** none expected — palette, placement, and the GitHub URL are settled above.
 - **Depends on:** none.
-- **Implementation notes:** _none yet_
+- **Implementation notes:** Canonical logo asset at `frontend/public/queuelab-logo.svg` (square, served at `/queuelab-logo.svg`). **Epic 2** reuses this exact file as the portfolio card image — copy it into joeys-hub `public/images/`.
 
 ## Epic 2 — Portfolio entry on joeys-hub
 

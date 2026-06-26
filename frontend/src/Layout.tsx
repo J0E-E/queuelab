@@ -21,8 +21,11 @@ export function Layout() {
           id="app-header"
           className="mb-6 flex items-center justify-between border border-solid border-muted bg-bg-invert px-3 py-1 text-bg"
         >
-          <span id="app-title" className="uppercase tracking-[0.02em]">
-            [ QUEUELAB ]
+          <span id="app-brand" className="flex items-center gap-2">
+            <img id="app-logo" src="/queuelab-logo.svg" alt="QueueLab logo" className="h-5 w-5" />
+            <span id="app-title" className="uppercase tracking-[0.02em]">
+              [ QUEUELAB ]
+            </span>
           </span>
           <nav id="app-nav" aria-label="primary" className="flex gap-4 text-sm">
             {NAV_ITEMS.map((item) => (
@@ -36,6 +39,15 @@ export function Layout() {
                 {item.label}
               </NavLink>
             ))}
+            <a
+              id="nav-link-github"
+              href="https://github.com/J0E-E/queuelab"
+              target="_blank"
+              rel="noreferrer"
+              className="no-underline"
+            >
+              github ↗
+            </a>
           </nav>
         </header>
         <Outlet />
