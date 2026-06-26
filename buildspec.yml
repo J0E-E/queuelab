@@ -31,6 +31,9 @@ phases:
       - IMAGE_TAG="${CODEBUILD_RESOLVED_SOURCE_VERSION:-latest}"
       - echo "Registry=${ECR_REGISTRY} Tag=${IMAGE_TAG}"
       - aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
+      # Also log in to ECR Public — base images (python/node/nginx) come from public.ecr.aws to
+      # dodge Docker Hub's anonymous pull rate limit. ECR Public lives only in us-east-1.
+      - aws ecr-public get-login-password --region us-east-1 | docker login --username AWS --password-stdin public.ecr.aws
   build:
     commands:
       - echo "Building linux/arm64 images..."

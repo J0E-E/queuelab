@@ -11,7 +11,8 @@
 #   docker build -f frontend/Dockerfile -t queuelab-frontend:latest ./frontend
 
 # --- Stage 1: build the static bundle ---------------------------------------------------
-FROM node:20-alpine AS build
+# ECR Public mirror (not Docker Hub) — avoids CodeBuild's anonymous Docker Hub pull rate limit.
+FROM public.ecr.aws/docker/library/node:20-alpine AS build
 WORKDIR /app
 
 # Install dependencies from the lockfile first for better layer caching.
@@ -23,7 +24,7 @@ COPY . .
 RUN npm run build
 
 # --- Stage 2: nginx that serves the bundle + terminates TLS + reverse-proxies -----------
-FROM nginx:1.27-alpine
+FROM public.ecr.aws/docker/library/nginx:1.27-alpine
 
 # Tools the certbot/bootstrap flow needs: openssl mints the throwaway self-signed cert so the
 # TLS server block can start before a real Let's Encrypt cert exists (see docker-entrypoint).

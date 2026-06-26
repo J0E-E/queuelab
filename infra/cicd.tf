@@ -78,6 +78,14 @@ data "aws_iam_policy_document" "codebuild" {
     resources = ["*"]
   }
 
+  # Pull base images (python/node/nginx) from ECR Public instead of Docker Hub, whose anonymous
+  # pull rate limit CodeBuild's shared IP keeps hitting. Neither action can be scoped to a resource.
+  statement {
+    sid       = "EcrPublicAuth"
+    actions   = ["ecr-public:GetAuthorizationToken", "sts:GetServiceBearerToken"]
+    resources = ["*"]
+  }
+
   statement {
     sid = "EcrPush"
     actions = [

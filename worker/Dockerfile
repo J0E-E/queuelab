@@ -6,7 +6,8 @@
 #
 #   docker build -f worker/Dockerfile -t queuelab-worker:latest .
 #
-FROM python:3.12-slim
+# ECR Public mirror (not Docker Hub) — avoids CodeBuild's anonymous Docker Hub pull rate limit.
+FROM public.ecr.aws/docker/library/python:3.12-slim
 
 # Pinned uv (not :latest) so the uv binary itself can't drift between builds.
 COPY --from=ghcr.io/astral-sh/uv:0.9.12 /uv /uvx /bin/

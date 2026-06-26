@@ -1,6 +1,9 @@
 # QueueLab backend image — serves both the FastAPI api and the autoscaler entrypoints.
 # Base image only at this stage; application logic and CMD arrive in later epics.
-FROM python:3.12-slim
+# Pull from ECR Public (mirrors Docker Official Images) instead of Docker Hub — CodeBuild's
+# shared NAT IP hits Docker Hub's anonymous pull rate limit (429 toomanyrequests). ECR Public
+# has no such limit and authenticates with the CodeBuild role's own AWS creds (no stored secret).
+FROM public.ecr.aws/docker/library/python:3.12-slim
 
 # uv for fast, reproducible dependency installs. Pinned (not :latest) so the uv binary
 # itself can't drift between builds.
