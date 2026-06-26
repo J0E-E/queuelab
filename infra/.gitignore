@@ -1,0 +1,15 @@
+# Local Terraform state holds real resource ids and can contain secrets — never commit it.
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Provider plugins and local working dir.
+.terraform/
+.terraform.lock.hcl
+
+# Real variable values (may hold account-specific data). The *.example is committed instead.
+*.tfvars
+!terraform.tfvars.example
+
+# Saved plan files.
+*.tfplan

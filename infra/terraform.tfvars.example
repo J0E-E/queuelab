@@ -1,0 +1,15 @@
+# Copy to terraform.tfvars and adjust as needed. Every value below has a default in
+# variables.tf, so an empty terraform.tfvars also works for the locked Epic 18 setup.
+
+aws_region    = "us-east-1"
+project_name  = "queuelab"
+instance_type = "t4g.small" # ARM/Graviton — CodeBuild must build linux/arm64 images (Epic 19)
+
+data_volume_size_gb = 20
+swap_size_gb        = 2
+
+github_repository = "J0E-E/queuelab"
+github_branch     = "main"
+
+domain_name      = "queuelab.joeyshub.com"
+hosted_zone_name = "joeyshub.com" # existing zone — looked up, never created

@@ -1,0 +1,63 @@
+#!/bin/bash
+# First-boot bootstrap for the QueueLab single-instance host (Amazon Linux 2023, arm64).
+# Templated by Terraform — $${...} placeholders are filled by the templatefile() call.
+set -euxo pipefail
+
+# --- Swap file -------------------------------------------------------------------------
+# t4g.small has only 2 GiB RAM; up to MAX_WORKERS worker containers can run, so add swap.
+# SWAP_MIB is computed from the Terraform-templated swap size (GiB -> MiB).
+SWAP_MIB=$((${swap_size_gb} * 1024))
+if [ ! -f /swapfile ]; then
+  dd if=/dev/zero of=/swapfile bs=1M count=$${SWAP_MIB}
+  chmod 600 /swapfile
+  mkswap /swapfile
+  swapon /swapfile
+  echo '/swapfile none swap sw 0 0' >>/etc/fstab
+fi
+
+# --- Data volume -----------------------------------------------------------------------
+# A separate gp3 EBS volume holds Postgres/Redis data so it survives instance replacement.
+# Format only if it has no filesystem yet, then mount at a stable path via fstab.
+DATA_DEVICE=""
+for candidate in /dev/sdf /dev/xvdf /dev/nvme1n1; do
+  if [ -b "$candidate" ]; then
+    DATA_DEVICE="$candidate"
+    break
+  fi
+done
+
+if [ -n "$DATA_DEVICE" ]; then
+  if ! blkid "$DATA_DEVICE"; then
+    mkfs.ext4 "$DATA_DEVICE"
+  fi
+  mkdir -p ${data_volume_mount_path}
+  DATA_UUID="$(blkid -s UUID -o value "$DATA_DEVICE")"
+  if ! grep -q "$DATA_UUID" /etc/fstab; then
+    echo "UUID=$DATA_UUID ${data_volume_mount_path} ext4 defaults,nofail 0 2" >>/etc/fstab
+  fi
+  mount -a
+fi
+
+# --- Docker + compose plugin -----------------------------------------------------------
+dnf update -y
+dnf install -y docker
+systemctl enable --now docker
+usermod -aG docker ec2-user || true
+
+# Compose v2 as a CLI plugin (arm64 binary).
+mkdir -p /usr/local/lib/docker/cli-plugins
+curl -fsSL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-aarch64" \
+  -o /usr/local/lib/docker/cli-plugins/docker-compose
+chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+
+# --- CodeDeploy agent (arm64) ----------------------------------------------------------
+dnf install -y ruby wget
+cd /tmp
+wget "https://aws-codedeploy-${region}.s3.${region}.amazonaws.com/latest/install"
+chmod +x ./install
+./install auto
+systemctl enable --now codedeploy-agent
+
+# --- SSM agent -------------------------------------------------------------------------
+# Pre-installed on AL2023, but make sure it is enabled and running for Session Manager.
+systemctl enable --now amazon-ssm-agent

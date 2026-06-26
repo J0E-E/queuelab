@@ -1569,7 +1569,7 @@ explicit and acyclic.
 - **Depends on:** Epic 14 (live state hook & panes), Epic 12 (chaos), Epic 11d-1 (manual
   control), Epic 10d (activity feed), Epic 5 (guest identity).
 
-## Epic 18 — Infrastructure (Terraform `/infra`)
+## Epic 18 — Infrastructure (Terraform `/infra`) — **COMPLETED** (24m · 8.9M tok · 367k tok/min)
 - **Intent:** Cheap, fully automated single-EC2 AWS provisioning as IaC.
 - **Scope:** `infra/` Terraform: VPC + subnet + security group (80/443), single EC2 +
   Elastic IP, EBS data volume, ECR repos (api, autoscaler, worker, frontend), IAM
@@ -1579,6 +1579,19 @@ explicit and acyclic.
 - **Verification:** `terraform validate` + `terraform plan` succeed against the target
   account; resources match §5.13. (Apply gated/manual.)
 - **Depends on:** Epic 1.
+- **Implementation notes:**
+  - **Epic 19:** instance is **arm64** (Graviton `t4g.small`) — CodeBuild must build all
+    images for `linux/arm64` and the deploy must pull arm64 tags. CodeBuild uses the
+    `amazonlinux2-aarch64-standard` ARM image to build natively.
+  - **Epic 19 / first deploy:** the CodeConnections GitHub connection is created in
+    **PENDING** status — it cannot pull source until authorized once in the AWS console
+    (Developer Tools → Connections → Update pending connection). See `infra/README.md`.
+  - **Epic 19:** `api` & `autoscaler` share `queuelab-backend:latest` at runtime — push that
+    one image to both ECR repos (or collapse to one); the `frontend` repo implies an
+    nginx + static-bundle image still to be defined. Four repos kept here for spec fidelity.
+  - **Epic 19:** `buildspec.yml` (CodeBuild) and `appspec.yml` + lifecycle scripts
+    (CodeDeploy) are NOT created here — the CodeBuild/CodeDeploy resources reference them by
+    convention (repo-root / agent default) and they arrive in Epic 19.
 
 ## Epic 19 — Deploy plumbing & first live deploy
 - **Intent:** The CI/CD shipping path and TLS, then the first live deployment of the
