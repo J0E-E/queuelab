@@ -24,7 +24,7 @@ proof point** — and the matched section-card styling shared with the sibling
 
 ---
 
-## Epic 1 — Rewrite the How-I-Work page as the real pipeline narrative
+## Epic 1 — Rewrite the How-I-Work page as the real pipeline narrative — **COMPLETED** (11m47s)
 
 - **Build strategy:** Tracer bullet — one customer-visible page edit through the only
   layer it touches (the static React page + its test); no architecture or integration
@@ -64,8 +64,6 @@ proof point** — and the matched section-card styling shared with the sibling
   in plain language with no hard dependency on tool brand-names.
 - **Depends on:** Epic 13 / §5.11 (the existing `/how-i-work` page and its routing) —
   already built.
-- **Open questions / decisions for stakeholders:**
-  - **Commit-history URL** — the close is built link-ready but no public repo URL / git
-    remote exists yet. When a public repo is published, supply the URL to wire the
-    "view the commit history →" link. Until then it ships copy-only. *(Confirm at
-    `4-plan-epic`.)*
+- **Handoff:** `git-history` section shipped link-ready/copy-only — `SECTIONS` entry
+  takes an optional `href`; the "view the commit history →" link (`#how-i-work-section-git-history-link`)
+  renders only when set. Wire the URL once a public repo exists.

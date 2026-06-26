@@ -5,6 +5,7 @@ interface Section {
   key: string;
   heading: string;
   body: string;
+  href?: string;
 }
 
 const SECTIONS: Section[] = [
@@ -14,9 +15,19 @@ const SECTIONS: Section[] = [
     body: 'Every feature starts as a brief, hardens into a technical design, then decomposes into small, independently reviewable epics with explicit dependencies. Nothing gets built until the open questions are closed — ambiguity is resolved on paper, where it is cheap.',
   },
   {
+    key: 'sliced-epics',
+    heading: 'Sliced into shippable epics',
+    body: 'Each epic is one small, gated unit of work with its deliverables defined up front. A feature ships as a sequence of these — each one self-contained, reviewable on its own, and small enough to hold in your head.',
+  },
+  {
     key: 'thin-thread',
     heading: 'A thin thread, end to end',
     body: 'The first slice pierces every layer — a walking skeleton or a tracer bullet — and keeps its code. Real behavior, edge cases, and polish layer onto a structure that already holds together, so the system is demonstrable from the first epic.',
+  },
+  {
+    key: 'generate',
+    heading: 'Generation is the cheap part',
+    body: 'This is an AI-assisted workflow with a human in the loop at every gate. The AI generates code against a locked spec — that part is fast and nearly free — while the human directs the design, approves the plan, and reviews the result. The leverage is in the spec and the review, not the typing.',
   },
   {
     key: 'review-loop',
@@ -26,7 +37,7 @@ const SECTIONS: Section[] = [
   {
     key: 'git-history',
     heading: 'The proof is in the history',
-    body: 'Every epic lands as one small, titled, reviewable commit. The git log reads as the build narrative — scaffold, core mechanics, real-time layer, frontend, infrastructure — each step green before the next began. The history is the receipt.',
+    body: 'Every epic lands as one small, titled, reviewable commit. The git log reads as the build narrative — scaffold, core mechanics, real-time layer, frontend, infrastructure — each step green before the next began. This site is the receipts.',
   },
 ];
 
@@ -54,6 +65,15 @@ export function HowIWork() {
               >
                 {section.body}
               </p>
+              {section.href && (
+                <a
+                  id={`how-i-work-section-${section.key}-link`}
+                  href={section.href}
+                  className="glow inline-block pt-1 text-base text-fg"
+                >
+                  view the commit history →
+                </a>
+              )}
             </section>
           ))}
         </div>
