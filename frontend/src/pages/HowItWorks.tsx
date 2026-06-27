@@ -1,3 +1,5 @@
+import { Fragment } from 'react';
+
 import { Pane } from '../components/Pane';
 import { PaneTitle } from '../components/PaneTitle';
 
@@ -46,20 +48,49 @@ export function HowItWorks() {
         </h1>
         <div id="how-it-works-sections" className="space-y-6 pt-3">
           {SECTIONS.map((section) => (
-            <section key={section.key} id={`how-it-works-section-${section.key}`}>
-              <h2
-                id={`how-it-works-section-${section.key}-heading`}
-                className="glow text-lg uppercase tracking-[0.02em] text-fg"
-              >
-                {section.heading}
-              </h2>
-              <p
-                id={`how-it-works-section-${section.key}-body`}
-                className="max-w-3xl pt-1 text-base text-fg-dim"
-              >
-                {section.body}
-              </p>
-            </section>
+            <Fragment key={section.key}>
+              <section id={`how-it-works-section-${section.key}`}>
+                <h2
+                  id={`how-it-works-section-${section.key}-heading`}
+                  className="glow text-lg uppercase tracking-[0.02em] text-fg"
+                >
+                  {section.heading}
+                </h2>
+                <p
+                  id={`how-it-works-section-${section.key}-body`}
+                  className="max-w-3xl pt-1 text-base text-fg-dim"
+                >
+                  {section.body}
+                </p>
+              </section>
+              {section.key === 'stack' && (
+                <section id="how-it-works-section-proof">
+                  <h2
+                    id="how-it-works-section-proof-heading"
+                    className="glow text-lg uppercase tracking-[0.02em] text-fg"
+                  >
+                    Here it is, actually running
+                  </h2>
+                  <figure id="how-it-works-stack-screenshot-figure">
+                    <img
+                      id="how-it-works-stack-screenshot"
+                      src="/compose-stack.png"
+                      alt="Screenshot of the running queuelab Docker Compose stack: redis, an autoscaler-spawned worker, postgres, the autoscaler, the api, and the frontend — all running."
+                      className="block w-full max-w-3xl border border-solid border-muted"
+                    />
+                    <figcaption
+                      id="how-it-works-stack-screenshot-caption"
+                      className="max-w-3xl pt-1 text-sm text-fg-dim"
+                    >
+                      The live <code>queuelab</code> stack: Redis, Postgres, the API, the
+                      autoscaler, and the frontend — plus <code>inspiring_chatelet</code>, a worker
+                      container the autoscaler spawned on its own (the random name is Docker's, not
+                      ours).
+                    </figcaption>
+                  </figure>
+                </section>
+              )}
+            </Fragment>
           ))}
         </div>
       </Pane>
